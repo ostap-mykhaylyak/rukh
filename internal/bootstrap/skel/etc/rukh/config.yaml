@@ -9,8 +9,11 @@
 
 # --- public entrypoints (the ports nginx used to own) ----------------
 server:
-  http: "0.0.0.0:80"          # "" disables the plain listener
-  https: "0.0.0.0:443"        # "" disables the TLS listener
+  # ":port" binds both IPv4 and IPv6. Use an explicit address (e.g.
+  # "203.0.113.5:80") when nginx has to keep the same port on
+  # 127.0.0.1: a wildcard bind would collide with it.
+  http: ":80"                 # "" disables the plain listener
+  https: ":443"               # "" disables the TLS listener
   read_header_timeout: "10s"
   idle_timeout: "120s"
   tls_min_version: "1.2"      # "1.2" or "1.3"

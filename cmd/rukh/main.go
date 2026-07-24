@@ -218,8 +218,13 @@ func checkConfig(cfgPath string) error {
 	} else if b := ncfg.Backends(taken); len(b) > 0 {
 		fmt.Printf("backend: %s (auto-detected, ssl=%v)\n", b[0].Addr, b[0].SSL)
 	} else {
-		fmt.Println("backend: none found in the nginx configuration; " +
-			"move nginx to a loopback port (e.g. listen 127.0.0.1:8080;) or set backend.address")
+		fmt.Printf("backend: none found — every nginx listener collides with what rukh binds (%s).\n",
+			strings.Join(taken, ", "))
+		fmt.Println("  Note that a wildcard bind takes the whole port, so moving nginx to 127.0.0.1")
+		fmt.Println("  on the SAME port is not enough. Pick one of:")
+		fmt.Println("    - give nginx a different port:  listen 127.0.0.1:8080;")
+		fmt.Println("    - or bind rukh to the public address only:  server.http: \"203.0.113.5:80\"")
+		fmt.Println("    - or set backend.address explicitly")
 	}
 	return nil
 }

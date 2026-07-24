@@ -78,6 +78,12 @@ server {
 }
 ```
 
+> **The port has to change, not just the address.** Moving nginx to
+> `127.0.0.1:80` is not enough: a wildcard bind (rukh's default `:80`)
+> collides with a specific bind on the same port, and rukh would fail
+> to start with "address already in use". Either give nginx a different
+> port, as above, or use the alternative layout below.
+
 and let nginx trust the local proxy, so logs and PHP keep seeing the
 real client address (in the `http` block):
 
@@ -106,6 +112,24 @@ Keep **one** plain loopback listener per site in nginx
 the `ssl_certificate` directives where they are: rukh reads them for
 TLS termination and nginx no longer has to. HTTP/2 for visitors comes
 from rukh.
+
+### Alternative: keep nginx's ports, bind rukh to the public address
+
+If you would rather not touch the `listen` ports at all, do the
+opposite: leave nginx on `127.0.0.1:80` and `127.0.0.1:443`, and tell
+rukh to bind only the public address, which does not collide with
+loopback:
+
+```yaml
+server:
+  http: "203.0.113.5:80"      # your public IPv4
+  https: "203.0.113.5:443"
+```
+
+rukh then auto-detects nginx on `127.0.0.1:80`. The trade-off is that
+the address is now hard-coded: on a machine whose IP changes, or with
+IPv6 to serve as well, the port move is the simpler setup — the
+default `:80`/`:443` binds every address of both families.
 
 ### Certificate renewals
 

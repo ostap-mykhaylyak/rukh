@@ -122,6 +122,8 @@ rukh %s installed. Next steps:
          listen 80;            with  listen 127.0.0.1:8080;
          listen 443 ssl;       with  listen 127.0.0.1:8443 ssl;
        (or use a single plain 127.0.0.1:8080 block: rukh terminates TLS)
+       note: the PORT must change — 127.0.0.1:80 still collides with
+       the wildcard :80 rukh binds by default
      and let nginx trust the local proxy:
          set_real_ip_from 127.0.0.1;
          real_ip_header X-Forwarded-For;

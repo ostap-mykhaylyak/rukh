@@ -131,7 +131,7 @@ func TestBackends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := c.Backends([]string{"0.0.0.0:80", "0.0.0.0:443"})
+	b := c.Backends([]string{":80", ":443"})
 	if len(b) == 0 {
 		t.Fatal("no backend candidate")
 	}
@@ -149,6 +149,34 @@ func TestBackends(t *testing.T) {
 	}
 }
 
+// nginx kept on 127.0.0.1:80 while rukh binds one public address is a
+// legitimate layout: the two sockets do not collide, and that loopback
+// listener is exactly the upstream we want.
+func TestBackendsKeepsLoopbackWhenRukhBindsOneAddress(t *testing.T) {
+	dir := t.TempDir()
+	conf := `http {
+		server { listen 127.0.0.1:80; server_name a.example; }
+		server { listen 127.0.0.1:443 ssl; server_name a.example; ssl_certificate a.pem; ssl_certificate_key a.key; }
+	}`
+	path := filepath.Join(dir, "nginx.conf")
+	os.WriteFile(path, []byte(conf), 0o644)
+	c, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := c.Backends([]string{"203.0.113.5:80", "203.0.113.5:443"})
+	if len(b) != 2 || b[0].Addr != "127.0.0.1:80" {
+		t.Fatalf("backends = %+v, want the loopback listeners", b)
+	}
+	// The same nginx with rukh on a wildcard: the sockets collide, so
+	// nothing there can be used (and rukh would fail to bind anyway).
+	for _, wildcard := range [][]string{{":80", ":443"}, {"0.0.0.0:80", "0.0.0.0:443"}, {"[::]:80", "[::]:443"}} {
+		if got := c.Backends(wildcard); len(got) != 0 {
+			t.Fatalf("Backends(%v) = %+v, want none: a wildcard bind takes the whole port", wildcard, got)
+		}
+	}
+}
+
 func TestBackendsSkipsPortsRukhBinds(t *testing.T) {
 	dir := t.TempDir()
 	conf := `http {
@@ -161,8 +189,44 @@ func TestBackendsSkipsPortsRukhBinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := c.Backends([]string{"0.0.0.0:80", "0.0.0.0:443"}); len(b) != 0 {
+	if b := c.Backends([]string{":80", ":443"}); len(b) != 0 {
 		t.Fatalf("nginx still on the public ports must yield no candidate, got %+v", b)
+	}
+}
+
+func TestSplitPort(t *testing.T) {
+	cases := []struct {
+		in, host, port string
+		ok             bool
+	}{
+		{"127.0.0.1:8080", "127.0.0.1", "8080", true},
+		{":80", "", "80", true},
+		{"[::]:8443", "[::]", "8443", true},
+		{"[::1]:80", "[::1]", "80", true},
+		{"example.com", "", "", false},
+		{"[::1]", "", "", false},
+	}
+	for _, c := range cases {
+		h, p, err := splitPort(c.in)
+		if (err == nil) != c.ok || (c.ok && (h != c.host || p != c.port)) {
+			t.Errorf("splitPort(%q) = %q, %q, %v", c.in, h, p, err)
+		}
+	}
+}
+
+// An IPv6-only nginx listener is a usable upstream too.
+func TestBackendsFindIPv6Listeners(t *testing.T) {
+	dir := t.TempDir()
+	conf := `http { server { listen [::1]:8080; server_name a.example; } }`
+	path := filepath.Join(dir, "nginx.conf")
+	os.WriteFile(path, []byte(conf), 0o644)
+	c, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := c.Backends([]string{":80", ":443"})
+	if len(b) != 1 || b[0].Addr != "[::1]:8080" {
+		t.Fatalf("backends = %+v", b)
 	}
 }
 

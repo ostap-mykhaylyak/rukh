@@ -396,10 +396,19 @@ func (c *Config) Match(host string) *Site {
 	return deflt
 }
 
-// splitPort is net.SplitHostPort without the import cycle of intent:
-// it must not fail on a bare hostname.
+// splitPort separates "host:port", keeping the brackets of an IPv6
+// literal in the host part (the form listen directives are normalized
+// to). It returns an error, rather than guessing, for anything without
+// a port: hostnames go through here too.
 func splitPort(s string) (string, string, error) {
-	i := strings.LastIndex(s, ":")
+	if strings.HasPrefix(s, "[") { // [::1]:8443
+		end := strings.IndexByte(s, ']')
+		if end < 0 || !strings.HasPrefix(s[end+1:], ":") {
+			return "", "", fmt.Errorf("no port")
+		}
+		return s[:end+1], s[end+2:], nil
+	}
+	i := strings.LastIndexByte(s, ':')
 	if i < 0 || strings.Contains(s[:i], ":") {
 		return "", "", fmt.Errorf("no port")
 	}
@@ -407,29 +416,28 @@ func splitPort(s string) (string, string, error) {
 }
 
 // Backends returns the listeners nginx keeps that rukh may use as its
-// upstream: everything that is not one of the addresses rukh binds
-// itself. Loopback listeners come first, then the lowest port; this is
-// the order the auto-detection tries.
+// upstream: everything rukh does not bind itself. Loopback listeners
+// come first, then the lowest port; this is the order the
+// auto-detection tries.
+//
+// "Does not bind itself" is a socket question, not a port question: a
+// wildcard bind takes the whole port, but rukh listening on a specific
+// public address leaves nginx free to keep 127.0.0.1 on that same
+// port, and that loopback listener is a perfectly good upstream.
 func (c *Config) Backends(taken []string) []Backend {
-	takenPorts := map[string]bool{}
-	for _, t := range taken {
-		if _, p, err := splitPort(t); err == nil {
-			takenPorts[p] = true
-		}
-	}
 	seen := map[string]bool{}
 	var out []Backend
 	for _, s := range c.Sites {
 		for _, l := range s.Listens {
 			host, port, err := splitPort(l.Addr)
-			if err != nil || takenPorts[port] || seen[l.Addr] {
+			if err != nil || seen[l.Addr] || conflictsWithAny(host, port, taken) {
 				continue
 			}
 			seen[l.Addr] = true
 			addr := l.Addr
 			// A wildcard bind is reachable on loopback, and loopback is
 			// the hop we want (no traffic leaves the machine).
-			if host == "0.0.0.0" || host == "[::]" {
+			if isWildcardHost(host) {
 				addr = "127.0.0.1:" + port
 			}
 			out = append(out, Backend{Addr: addr, SSL: l.SSL})
@@ -445,6 +453,31 @@ func (c *Config) Backends(taken []string) []Backend {
 		return pi < pj
 	})
 	return out
+}
+
+// conflictsWithAny reports whether a listener would collide with any
+// of the addresses rukh binds. Two sockets on the same port collide
+// when they share the address or when either side is a wildcard;
+// different ports never collide.
+func conflictsWithAny(host, port string, taken []string) bool {
+	for _, t := range taken {
+		th, tp, err := splitPort(t)
+		if err != nil || tp != port {
+			continue
+		}
+		if isWildcardHost(th) || isWildcardHost(host) || sameHost(th, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWildcardHost(h string) bool {
+	return h == "" || h == "0.0.0.0" || h == "[::]" || h == "*" || h == "::"
+}
+
+func sameHost(a, b string) bool {
+	return strings.EqualFold(strings.Trim(a, "[]"), strings.Trim(b, "[]"))
 }
 
 func portOf(addr string) string {

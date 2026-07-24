@@ -151,8 +151,8 @@ type Log struct {
 func Default() *Config {
 	return &Config{
 		Server: Server{
-			HTTP:              "0.0.0.0:80",
-			HTTPS:             "0.0.0.0:443",
+			HTTP:              ":80", // ":port" binds IPv4 and IPv6
+			HTTPS:             ":443",
 			ReadHeaderTimeout: Duration(10 * time.Second),
 			IdleTimeout:       Duration(120 * time.Second),
 			TLSMinVersion:     "1.2",

@@ -188,8 +188,11 @@ func (s *Server) Close() {
 // putting rukh in front of nginx.
 func bindError(field, addr string, err error) error {
 	if strings.Contains(err.Error(), "address already in use") {
-		return fmt.Errorf("%s: %s is already in use — nginx is still listening there; "+
-			"move nginx to a loopback port (e.g. listen 127.0.0.1:8080;) and reload it: %w", field, addr, err)
+		return fmt.Errorf("%s: %s is already in use — something else holds that port. "+
+			"Note that a wildcard bind collides with 127.0.0.1 on the SAME port, so moving "+
+			"nginx to loopback is not enough: give nginx a different port "+
+			"(e.g. listen 127.0.0.1:8080;) and reload it, or bind rukh to the public "+
+			"address only (server.http: \"203.0.113.5:80\"): %w", field, addr, err)
 	}
 	if strings.Contains(err.Error(), "permission denied") {
 		return fmt.Errorf("%s: cannot bind %s without privileges (ports below 1024 need root "+

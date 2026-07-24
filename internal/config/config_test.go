@@ -32,7 +32,7 @@ func TestEmptyFileYieldsTheDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an empty config must load: %v", err)
 	}
-	if c.Server.HTTPS != "0.0.0.0:443" || !c.Hints.Enabled || !c.Preload.Enabled {
+	if c.Server.HTTPS != ":443" || !c.Hints.Enabled || !c.Preload.Enabled {
 		t.Fatalf("defaults not applied: %+v", c.Server)
 	}
 	if c.Backend.Address != "" {
