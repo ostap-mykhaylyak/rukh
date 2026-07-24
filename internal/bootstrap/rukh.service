@@ -1,0 +1,49 @@
+# rukh - learning reverse proxy in front of nginx
+#
+# Runs as root: it binds :80/:443 and reads the certificate files
+# referenced by the nginx configuration (usually root-owned, under
+# /etc/letsencrypt). The hardening below still confines it.
+
+[Unit]
+Description=rukh - learning reverse proxy in front of nginx
+Documentation=https://github.com/ostap-mykhaylyak/rukh
+After=network-online.target nginx.service
+Wants=network-online.target
+# Stop hammering if startup keeps failing (e.g. nginx still holding
+# port 443): after 5 failures within 60s systemd gives up and the unit
+# stays failed, so the problem is visible instead of an endless loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/rukh start --config /etc/rukh/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# An edge proxy handles many concurrent client + backend connections;
+# the default file-descriptor limit (often 1024) causes dropped
+# connections under asset-heavy pages.
+LimitNOFILE=1048576
+
+RuntimeDirectory=rukh
+RuntimeDirectoryMode=0750
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/var/log/rukh
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,87 @@
+# rukh - learning reverse proxy in front of nginx
+#
+# This file is never rewritten by the daemon: /etc/rukh can be mounted
+# read-only. Every setting below is optional and shown with its
+# default: rukh is designed to work with an empty config.yaml.
+#
+# Changes are picked up automatically (the file is watched); a
+# `rukh reload` or `systemctl reload rukh` also reopens the log files.
+
+# --- public entrypoints (the ports nginx used to own) ----------------
+server:
+  http: "0.0.0.0:80"          # "" disables the plain listener
+  https: "0.0.0.0:443"        # "" disables the TLS listener
+  read_header_timeout: "10s"
+  idle_timeout: "120s"
+  tls_min_version: "1.2"      # "1.2" or "1.3"
+  redirect_https: false       # 301 http -> https (leave to nginx if it already does it)
+
+# --- where nginx now listens ------------------------------------------
+backend:
+  # Empty means auto-detect from the nginx configuration: the first
+  # loopback listener that is not a port rukh binds itself.
+  address: ""                 # e.g. "127.0.0.1:8080"
+  tls: false                  # true if that nginx listener is "ssl"
+  tls_skip_verify: true       # loopback hop: the certificate name is irrelevant
+  timeout: "60s"
+  max_idle_conns_per_host: 256
+
+# --- discovery of virtual hosts and certificates ----------------------
+# rukh parses this file (and everything it includes) to learn which
+# server blocks exist and which certificate each one uses. Certificates
+# keep being issued and renewed exactly as they are today; rukh only
+# reads the same files, and picks up a renewal within 30 seconds.
+nginx:
+  config: "/etc/nginx/nginx.conf"
+  refresh: "1m"               # re-scan when the files change
+
+# --- client address ---------------------------------------------------
+# rukh is normally the edge, so the peer IS the client and nothing has
+# to be configured. List a CDN or an upstream load balancer here to
+# take the client address from the forwarding header instead.
+realip:
+  header: "X-Forwarded-For"
+  trusted_proxies: []         # e.g. ["173.245.48.0/20", "10.0.0.5"]
+
+# --- traffic model (in memory, no database, ever) ---------------------
+learn:
+  half_life: "6h"             # how fast old observations lose weight
+  max_hosts: 64
+  max_pages_per_host: 5000
+  max_assets_per_page: 60
+  max_next_per_page: 32
+  prune_interval: "1m"        # sweep: decay everything, forget the faded
+  rebuild_interval: "5s"      # how often a page's hint list is recomputed
+  min_score: 0.05             # below this an entry is forgotten
+  queue_size: 8192            # observation queue; full = observations dropped
+
+# --- automatic 103 Early Hints ---------------------------------------
+hints:
+  enabled: true
+  min_confidence: 0.6         # how reliably the resource follows the page
+  min_samples: 5              # decayed hits required before it is trusted
+  max_links: 10
+  max_age: "24h"              # ignore resources not seen for longer
+  http1: false                # browsers act on 103 over HTTP/2 and HTTP/3
+
+# --- navigation prediction (Link rel=prefetch on the page response) ---
+prefetch:
+  enabled: true
+  min_probability: 0.35
+  max_links: 2
+
+# --- cache preloader --------------------------------------------------
+preload:
+  enabled: true
+  concurrency: 2
+  max_per_minute: 30          # hard budget: warm-up never competes with visitors
+  interval: "30s"             # how often the plan is executed
+  min_refresh: "1m"           # revisit period of the hottest page
+  max_refresh: "1h"           # revisit period of the coldest one
+  max_pages: 200              # plan size
+  timeout: "20s"
+
+# --- logs -------------------------------------------------------------
+log:
+  access: true                # one JSON line per request in access.log
+  learn: true                 # hint and preload decisions in learn.log
