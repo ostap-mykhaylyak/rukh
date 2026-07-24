@@ -14,7 +14,7 @@ import (
 // renewed certificate is picked up without touching rukh.
 //
 // A failed re-parse never replaces the running configuration: the last
-// good one keeps serving and the error is reported by --status.
+// good one keeps serving and the error is reported by `rukh status`.
 type Store struct {
 	path string
 	log  *slog.Logger

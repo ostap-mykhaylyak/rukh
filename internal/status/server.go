@@ -9,7 +9,7 @@ import (
 )
 
 // Server is the local read-only Unix socket the daemon exposes for
-// --status. It never crosses the network: no public bind, covered by
+// `rukh status`. It never crosses the network: no public bind, covered by
 // the systemd hardening.
 type Server struct {
 	ln   net.Listener

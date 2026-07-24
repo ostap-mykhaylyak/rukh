@@ -26,7 +26,7 @@ func Query(sock string, timeout time.Duration) (*Snapshot, error) {
 	return &snap, nil
 }
 
-// Run implements the --status / --status-json / --watch CLI and
+// Run implements the `rukh status` CLI (--json, --watch) and
 // returns the process exit code (Nagios convention).
 func Run(version, sock, cfgPath string, jsonOut bool, watch time.Duration) int {
 	if watch <= 0 {
@@ -36,7 +36,7 @@ func Run(version, sock, cfgPath string, jsonOut bool, watch time.Duration) int {
 	}
 
 	// Live mode: redraw in a loop like top (or one JSON line per tick
-	// with --status-json, suitable for piping to a collector).
+	// with --json, suitable for piping to a collector).
 	var prev *Snapshot
 	var prevAt time.Time
 	for {

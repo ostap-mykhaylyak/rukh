@@ -107,7 +107,14 @@ func Init(version string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "rukh: installed logrotate policy at %s\n", paths.LogrotateFile)
 
-	fmt.Fprintf(out, `
+	fmt.Fprintf(out, nextSteps, version, paths.ConfigFile, paths.NginxConf)
+	return nil
+}
+
+// nextSteps is the post-install guide. It is a package-level constant
+// so a test can check it keeps using the documented command forms:
+// the service verbs are bare words, only the rest takes a leading --.
+const nextSteps = `
 rukh %s installed. Next steps:
 
   1. move nginx off the public ports, keeping everything else as it is:
@@ -122,13 +129,11 @@ rukh %s installed. Next steps:
   2. review %s (defaults are meant to be enough)
   3. systemctl daemon-reload
   4. systemctl enable --now rukh
-  5. rukh --status
+  5. rukh status
 
 rukh reads %s to discover the virtual hosts and their certificates:
 nothing about certificates has to be configured twice.
-`, version, paths.ConfigFile, paths.NginxConf)
-	return nil
-}
+`
 
 // PurgeTargets returns, in one place, everything the app creates at
 // runtime. The purge stays automatically aligned with the layout.

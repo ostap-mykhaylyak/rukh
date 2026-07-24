@@ -218,7 +218,7 @@ func TestVariableCertificateIsIgnored(t *testing.T) {
 func TestMissingIncludeIsNotFatal(t *testing.T) {
 	dir := t.TempDir()
 	conf := `
-	include /nonexistent/*.conf;
+	include /nonexistent/nginx-extra.conf;
 	http { server { listen 8080; server_name a.example; } }`
 	path := filepath.Join(dir, "nginx.conf")
 	os.WriteFile(path, []byte(conf), 0o644)
@@ -230,7 +230,33 @@ func TestMissingIncludeIsNotFatal(t *testing.T) {
 		t.Fatalf("sites = %+v", c.Sites)
 	}
 	if len(c.Warnings) == 0 {
-		t.Error("expected a warning for the missing include")
+		t.Error("expected a warning for the missing include file")
+	}
+}
+
+// A wildcard matching nothing is what a stock Ubuntu nginx.conf does
+// with an empty modules-enabled/: nginx accepts it, so it must not
+// show up as a warning (it would keep `rukh status` at WARNING
+// forever).
+func TestEmptyGlobIncludeIsSilent(t *testing.T) {
+	dir := t.TempDir()
+	conf := `
+	include /etc/nginx/modules-enabled/*.conf;
+	http {
+		include mime.types.d/*.conf;
+		server { listen 8080; server_name a.example; }
+	}`
+	path := filepath.Join(dir, "nginx.conf")
+	os.WriteFile(path, []byte(conf), 0o644)
+	c, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none for wildcards matching nothing", c.Warnings)
+	}
+	if len(c.Sites) != 1 {
+		t.Fatalf("sites = %+v", c.Sites)
 	}
 }
 

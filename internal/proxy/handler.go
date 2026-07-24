@@ -155,7 +155,7 @@ func (p *Proxy) resolveBackend(c *config.Config) Backend {
 }
 
 // Backend returns the current upstream (used by the preloader and by
-// --status).
+// `rukh status`).
 func (p *Proxy) Backend() Backend { return *p.backend.Load() }
 
 // Transport returns the shared transport (used by the preloader, so

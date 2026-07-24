@@ -72,6 +72,19 @@ func TestUnitFileRunsTheServiceVerb(t *testing.T) {
 	}
 }
 
+// The post-install guide is the first thing an operator follows: it
+// must use the real command forms, not the dashed ones.
+func TestNextStepsUsesTheDocumentedCommandForms(t *testing.T) {
+	for _, wrong := range []string{"--status", "--start", "--stop", "--reload", "--restart"} {
+		if strings.Contains(nextSteps, wrong) {
+			t.Errorf("the next steps mention %q: service verbs take no leading --", wrong)
+		}
+	}
+	if !strings.Contains(nextSteps, "rukh status") {
+		t.Error("the next steps must end on 'rukh status'")
+	}
+}
+
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }

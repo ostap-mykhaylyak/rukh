@@ -3,7 +3,7 @@
 // source of truth consumed by the status socket.
 //
 // There is no metrics export: rukh is an optimizer, not a monitoring
-// system. These counters exist so `rukh --status` can say what the
+// system. These counters exist so `rukh status` can say what the
 // daemon is doing right now.
 package metrics
 

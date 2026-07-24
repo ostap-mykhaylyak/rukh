@@ -84,7 +84,7 @@ func (s *Store) GetPair(certFile, keyFile string) (*tls.Certificate, error) {
 	return &cert, nil
 }
 
-// Info describes one cached certificate, for --status.
+// Info describes one cached certificate, for `rukh status`.
 type Info struct {
 	CertFile string    `json:"cert_file"`
 	Subject  string    `json:"subject,omitempty"`

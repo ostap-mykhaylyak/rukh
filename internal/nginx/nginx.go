@@ -119,7 +119,14 @@ func (c *Config) expandIncludes(dirs []directive, prefix string, depth int) []di
 			}
 			matches, err := filepath.Glob(pattern)
 			if err != nil || len(matches) == 0 {
-				c.warn("include %q matched no file", d.args[0])
+				// A wildcard that matches nothing is normal and nginx
+				// itself accepts it (a stock Ubuntu install ships an
+				// empty modules-enabled/); only a literal path that is
+				// missing is worth reporting, because nginx would
+				// refuse to start on it.
+				if !hasGlobMeta(d.args[0]) {
+					c.warn("include %q: file not found", d.args[0])
+				}
 				continue
 			}
 			sort.Strings(matches)
@@ -139,6 +146,12 @@ func (c *Config) expandIncludes(dirs []directive, prefix string, depth int) []di
 		out = append(out, d)
 	}
 	return out
+}
+
+// hasGlobMeta reports whether an include path is a pattern rather than
+// a single file.
+func hasGlobMeta(path string) bool {
+	return strings.ContainsAny(path, "*?[")
 }
 
 func (c *Config) warn(format string, a ...any) {

@@ -52,7 +52,7 @@ type Warmer struct {
 	fails int
 }
 
-// Stats is what --status reports about the preloader.
+// Stats is what `rukh status` reports about the preloader.
 type Stats struct {
 	Enabled   bool      `json:"enabled"`
 	PlanSize  int       `json:"plan_size"`

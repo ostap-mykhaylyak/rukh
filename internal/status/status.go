@@ -1,5 +1,5 @@
 // Package status implements the daemon's status snapshot, the local
-// Unix socket that serves it, and the CLI client behind --status.
+// Unix socket that serves it, and the CLI client behind `rukh status`.
 //
 // The daemon is the single source of truth about its own state: the
 // client never reconstructs state from disk (beyond a minimal "is the
