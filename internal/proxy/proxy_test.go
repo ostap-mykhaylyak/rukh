@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -25,6 +28,11 @@ import (
 func backendEcho(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(25 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html>slow</html>")
+	})
 	mux.HandleFunc("/style.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css")
 		fmt.Fprint(w, "body{}")
@@ -290,6 +298,45 @@ func TestNoHintsForUnknownPage(t *testing.T) {
 	resp.Body.Close()
 	if got != 0 {
 		t.Fatalf("informational responses = %d, want none", got)
+	}
+}
+
+// The access log must be able to answer "which resources are slow":
+// that needs the kind of each request and the origin's own time.
+func TestAccessLogRecordsKindAndOriginTime(t *testing.T) {
+	var buf bytes.Buffer
+	env := newEnv(t, "")
+	env.proxy.logs.Access = slog.New(slog.NewJSONHandler(&buf, nil))
+
+	env.get(t, "/slow", map[string]string{"Sec-Fetch-Dest": "document", "Accept": "text/html"})
+	env.get(t, "/style.css", map[string]string{
+		"Referer": "http://example.test/", "Sec-Fetch-Dest": "style",
+	})
+
+	var kinds []string
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var e struct {
+			Kind     string  `json:"kind"`
+			OriginMs float64 `json:"origin_ms"`
+			Duration float64 `json:"duration_ms"`
+			Path     string  `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("%v: %s", err, line)
+		}
+		kinds = append(kinds, e.Kind)
+		// The origin's share can never exceed the whole request.
+		if e.OriginMs > e.Duration {
+			t.Errorf("%s: origin_ms %v > duration_ms %v", e.Path, e.OriginMs, e.Duration)
+		}
+		// The backend sleeps 25ms on /slow: that time must be charged
+		// to the origin, not just to the total.
+		if e.Path == "/slow" && e.OriginMs < 20 {
+			t.Errorf("origin_ms = %v for a backend that took 25ms", e.OriginMs)
+		}
+	}
+	if len(kinds) != 2 || kinds[0] != "page" || kinds[1] != "style" {
+		t.Fatalf("kinds = %v, want [page style]", kinds)
 	}
 }
 

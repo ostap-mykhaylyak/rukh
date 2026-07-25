@@ -73,10 +73,29 @@ type Proxy struct {
 type stateKey struct{}
 
 type reqState struct {
+	start time.Time
+	// origin is the time nginx took to produce the response headers.
+	// It is what the origin is responsible for; the total request
+	// duration also contains sending the body to the client, which a
+	// slow phone inflates and the backend cannot be blamed for.
+	origin    time.Duration
 	page      bool
 	as        string
 	status    int
 	cacheable bool
+}
+
+// kind labels a request in the access log, so "which resources are
+// slow" is one query away.
+func (s *reqState) kind() string {
+	switch {
+	case s.page:
+		return "page"
+	case s.as != "":
+		return s.as
+	default:
+		return "other"
+	}
 }
 
 // New builds the handler. Reconfigure must be called once (and on
@@ -255,7 +274,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hints := p.earlyHints(w, r, c, host, key)
 
-	st := &reqState{}
+	st := &reqState{start: start}
 	rec := &recorder{ResponseWriter: w}
 	p.rp.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), stateKey{}, st)))
 
@@ -272,6 +291,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", rec.status,
 			"bytes", rec.bytes,
 			"duration_ms", float64(elapsed.Microseconds())/1000,
+			"origin_ms", float64(st.origin.Microseconds())/1000,
+			"kind", st.kind(),
 			"client", p.rip.Load().clientIP(r),
 			"proto", r.Proto,
 			"hints", hints,
@@ -323,6 +344,11 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 	c := p.cfg.Get()
+	// ModifyResponse runs as soon as the backend's headers arrive and
+	// before the body is streamed: this is nginx's time to first byte.
+	if !st.start.IsZero() {
+		st.origin = time.Since(st.start)
+	}
 	ct := resp.Header.Get("Content-Type")
 	st.status = resp.StatusCode
 	st.cacheable = cacheableResponse(resp)
@@ -354,6 +380,13 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 // GET traffic teaches anything: an error page has no resources worth
 // preloading and a logged-in page is personalized by definition.
 func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, key string, elapsed time.Duration) {
+	// The preloader prioritizes slow pages: "slow" must mean slow at
+	// the origin, otherwise a visitor on a bad connection would make a
+	// fast page look expensive.
+	latency := st.origin
+	if latency <= 0 {
+		latency = elapsed
+	}
 	if st.status != http.StatusOK || r.Method != http.MethodGet {
 		return
 	}
@@ -380,7 +413,7 @@ func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, k
 			Ref:       ref,
 			Client:    client,
 			Status:    st.status,
-			Latency:   elapsed,
+			Latency:   latency,
 			Cacheable: st.cacheable,
 		})
 	case st.as != "":

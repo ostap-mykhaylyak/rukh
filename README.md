@@ -266,6 +266,17 @@ otherwise the header is ignored, so nobody can forge an address.
 | `access.log` | one line per proxied request (`log.access: false` to disable) |
 | `learn.log` | early-hint and preload decisions |
 
+Each access line carries `duration_ms` (the whole request, including
+sending the body to the client), `origin_ms` (nginx's time to first
+byte — what the origin is actually responsible for) and `kind`
+(`page`, `style`, `script`, `font`, `image`, `other`), so "what is
+slow, and is it us or the visitor's connection" is one query:
+
+```bash
+# the 20 slowest responses, by the origin's own time
+jq -r 'select(.msg=="request") | [.origin_ms, .duration_ms, .kind, .status, .path] | @tsv'   /var/log/rukh/access.log | sort -rn | head -20
+```
+
 Rotation is logrotate's job (policy installed by `--init`); SIGHUP
 reopens the files.
 
