@@ -83,11 +83,20 @@ type Params struct {
 }
 
 // Hint is one resource worth announcing in a 103 Early Hints response.
+// It is also the shape the manually configured hints take, so both
+// sources render through the same code.
 type Hint struct {
-	URL         string  `json:"url"`
-	As          string  `json:"as"`
-	Confidence  float64 `json:"confidence"`
-	CrossOrigin bool    `json:"crossorigin"`
+	URL string `json:"url"`
+	As  string `json:"as"`
+	// Rel is empty for a preload (the usual case); "preconnect" and
+	// "dns-prefetch" are only produced by the manual files, where an
+	// operator can point at a third-party origin.
+	Rel         string  `json:"rel,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	CrossOrigin bool    `json:"crossorigin,omitempty"`
+	// Manual marks a hint that comes from a configuration file rather
+	// than from observed traffic.
+	Manual bool `json:"manual,omitempty"`
 }
 
 // Target is one page the cache preloader may warm.

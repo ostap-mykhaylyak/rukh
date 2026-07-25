@@ -28,6 +28,7 @@ var UnitFile []byte
 // skel source paths inside the embedded FS.
 const (
 	skelConfig    = "skel/etc/rukh/config.yaml"
+	skelHints     = "skel/etc/rukh/hints"
 	skelLogrotate = "skel/etc/logrotate.d/rukh"
 )
 
@@ -35,7 +36,7 @@ const (
 // default config WITHOUT overwriting an existing one. Used both by
 // --init and by the first daemon start without a config.
 func EnsureLayout(out io.Writer) error {
-	for _, dir := range []string{paths.ConfigDir, paths.LogDir} {
+	for _, dir := range []string{paths.ConfigDir, paths.HintsDir, paths.LogDir} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
@@ -46,6 +47,18 @@ func EnsureLayout(out io.Writer) error {
 	}
 	if created {
 		fmt.Fprintf(out, "rukh: installed default config at %s\n", paths.ConfigFile)
+	}
+	// The documented example of a manual hints file. Its name ends in
+	// .example, so the loader ignores it until it is copied.
+	entries, err := skelFS.ReadDir(skelHints)
+	if err != nil {
+		return fmt.Errorf("embedded skel: %w", err)
+	}
+	for _, e := range entries {
+		dst := filepath.Join(paths.HintsDir, e.Name())
+		if _, err := installIfMissing(skelHints+"/"+e.Name(), dst, 0o640); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -107,7 +120,7 @@ func Init(version string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "rukh: installed logrotate policy at %s\n", paths.LogrotateFile)
 
-	fmt.Fprintf(out, nextSteps, version, paths.ConfigFile, paths.NginxConf)
+	fmt.Fprintf(out, nextSteps, version, paths.ConfigFile, paths.HintsDir, paths.NginxConf)
 	return nil
 }
 
@@ -129,6 +142,9 @@ rukh %s installed. Next steps:
          real_ip_header X-Forwarded-For;
        then: nginx -t && systemctl reload nginx
   2. review %s (defaults are meant to be enough)
+     behind a CDN, list each site's static resources in
+     %s/<hostname>.yaml: they never reach this server, so
+     rukh cannot learn them by watching traffic
   3. systemctl daemon-reload
   4. systemctl enable --now rukh
   5. rukh status

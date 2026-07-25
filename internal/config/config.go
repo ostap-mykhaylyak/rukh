@@ -113,7 +113,11 @@ type Learn struct {
 
 // Hints tunes the automatic 103 Early Hints.
 type Hints struct {
-	Enabled       bool     `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Dir holds one optional YAML file per virtual host listing
+	// resources to announce that traffic cannot teach (a CDN in front
+	// serves them without ever reaching the origin).
+	Dir           string   `yaml:"dir"`
 	MinConfidence float64  `yaml:"min_confidence"` // P(asset | page view)
 	MinSamples    float64  `yaml:"min_samples"`    // decayed hits required
 	MaxLinks      int      `yaml:"max_links"`
@@ -185,6 +189,7 @@ func Default() *Config {
 		},
 		Hints: Hints{
 			Enabled:       true,
+			Dir:           paths.HintsDir,
 			MinConfidence: 0.6,
 			MinSamples:    5,
 			MaxLinks:      10,
@@ -319,6 +324,9 @@ func (c *Config) validate() error {
 	}
 	if c.Hints.MaxAge.Std() <= 0 {
 		return fmt.Errorf("hints.max_age must be positive")
+	}
+	if c.Hints.Dir == "" {
+		return fmt.Errorf("hints.dir is required")
 	}
 
 	if c.Prefetch.MinProbability < 0 || c.Prefetch.MinProbability > 1 {

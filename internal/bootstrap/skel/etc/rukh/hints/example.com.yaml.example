@@ -1,0 +1,43 @@
+# Manual Early Hints for one virtual host.
+#
+# Copy this file to <hostname>.yaml — the name of the file IS the host
+# it applies to (e.g. /etc/rukh/hints/example.com.yaml). Changes are
+# picked up immediately, no reload needed.
+#
+# When do you need this? rukh normally learns which resources a page
+# needs by watching them go past. Behind a CDN that serves static files
+# from its edge (Cloudflare and friends), those requests never reach
+# this server, so there is nothing to learn from: the HTML arrives, the
+# CSS does not. The same applies to a site that has just gone live.
+# List the resources here and rukh announces them from the first
+# request, without waiting to learn anything.
+#
+# Manual entries are always sent, and they come first; whatever rukh
+# has learned fills the remaining slots up to hints.max_links.
+
+# Optional: the hostnames this file covers. Defaults to the file name.
+# A "*.example.com" entry matches every subdomain.
+hosts:
+  - example.com
+  - www.example.com
+
+# Announced on every page of the host. The type is inferred from the
+# extension; set "as" when the URL has no useful extension.
+default:
+  - /wp-content/themes/mytheme/style.css
+  - /wp-content/themes/mytheme/app.js
+  - url: /wp-content/themes/mytheme/fonts/inter.woff2
+    as: font          # fonts always get crossorigin, or they load twice
+  - url: https://cdn.example.net
+    rel: preconnect   # open the connection to a third-party origin early
+
+# Per-path additions, on top of the defaults above. A pattern ending
+# in * matches by prefix; anything else must match the path exactly.
+# The most specific rule wins (exact first, then the longest prefix).
+paths:
+  "/":
+    - /wp-content/uploads/hero.webp
+  "/product/*":
+    - /wp-content/plugins/woocommerce/assets/css/woocommerce.css
+    - url: /wp-content/plugins/woocommerce/assets/js/frontend/single-product.min.js
+      as: script

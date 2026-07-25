@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
+	"github.com/ostap-mykhaylyak/rukh/internal/hints"
 	"github.com/ostap-mykhaylyak/rukh/internal/learn"
 	"github.com/ostap-mykhaylyak/rukh/internal/logging"
 	"github.com/ostap-mykhaylyak/rukh/internal/metrics"
@@ -119,7 +120,10 @@ learn:
 	stop := make(chan struct{})
 	engine.Start(stop)
 
-	p := New(mgr, ng, engine, m, logs)
+	manual := hints.NewStore(filepath.Join(dir, "hints"), logs.Service)
+	manual.LoadAll()
+
+	p := New(mgr, ng, engine, manual, m, logs)
 	front := httptest.NewServer(p)
 
 	env := &testEnv{proxy: p, engine: engine, front: front, backend: be, stop: stop}
@@ -400,7 +404,7 @@ func TestBackendAutoDetectionFromNginx(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := New(mgr, ng, learn.New(learn.Params{QueueSize: 16, HalfLife: time.Hour}, nil, logs.Learn),
-		metrics.New(), logs)
+		hints.NewStore(filepath.Join(dir, "hints"), logs.Service), metrics.New(), logs)
 	b := p.Backend()
 	if b.Addr != "127.0.0.1:8080" || b.TLS || !b.Auto {
 		t.Fatalf("backend = %+v, want the loopback plain listener, auto-detected", b)
@@ -483,5 +487,77 @@ func TestPrefetchLinksAreNotChainedOrSentBackwards(t *testing.T) {
 		if strings.Contains(l, "rel=prefetch") {
 			t.Errorf("chained a prefetch onto a prefetched page: %q", l)
 		}
+	}
+}
+
+// Behind a CDN the static resources never reach the origin, so the
+// model cannot learn them: the manually configured ones must be
+// announced from the very first request, and merged with whatever has
+// been learned.
+func TestManualHintsAreSentAndMergedWithLearnedOnes(t *testing.T) {
+	env := newEnv(t, "")
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "example.test.yaml"), []byte(`
+default:
+  - /cdn/theme.css
+paths:
+  "/":
+    - url: https://cdn.example.net
+      rel: preconnect
+`), 0o644)
+	env.proxy.manual = hints.NewStore(dir, logging.Discard().Service)
+	env.proxy.manual.LoadAll()
+
+	// Nothing has been learned yet: the manual hints alone must fire.
+	var got []string
+	req, _ := http.NewRequest(http.MethodGet, env.front.URL+"/", nil)
+	req.Host = "example.test"
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	trace := &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
+			if code == http.StatusEarlyHints {
+				got = h.Values("Link")
+			}
+			return nil
+		},
+	}
+	resp, err := http.DefaultClient.Do(req.WithContext(httptrace.WithClientTrace(context.Background(), trace)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if len(got) != 2 || got[0] != "</cdn/theme.css>; rel=preload; as=style" {
+		t.Fatalf("103 Link = %v", got)
+	}
+	if got[1] != "<https://cdn.example.net>; rel=preconnect; crossorigin" {
+		t.Fatalf("path rule not applied: %v", got)
+	}
+
+	// Now teach it a resource that does reach the origin: both sources
+	// must end up in the same response, manual first.
+	for i := 0; i < 3; i++ {
+		env.get(t, "/", nil)
+		env.get(t, "/style.css", map[string]string{
+			"Referer": "http://example.test/", "Sec-Fetch-Dest": "style",
+		})
+	}
+	waitForHints(t, env.engine, "example.test", "/")
+
+	got = nil
+	resp, err = http.DefaultClient.Do(req.WithContext(httptrace.WithClientTrace(context.Background(), trace)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(got) != 3 {
+		t.Fatalf("103 Link = %v, want the two manual entries plus the learned one", got)
+	}
+	if !strings.Contains(got[0], "/cdn/theme.css") {
+		t.Errorf("manual hints must come first: %v", got)
+	}
+	if !strings.Contains(got[2], "/style.css") {
+		t.Errorf("the learned resource is missing: %v", got)
 	}
 }

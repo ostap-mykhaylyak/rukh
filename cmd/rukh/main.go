@@ -9,6 +9,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/ostap-mykhaylyak/rukh/internal/bootstrap"
 	"github.com/ostap-mykhaylyak/rukh/internal/certs"
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
+	"github.com/ostap-mykhaylyak/rukh/internal/hints"
 	"github.com/ostap-mykhaylyak/rukh/internal/learn"
 	"github.com/ostap-mykhaylyak/rukh/internal/logging"
 	"github.com/ostap-mykhaylyak/rukh/internal/metrics"
@@ -206,6 +209,22 @@ func checkConfig(cfgPath string) error {
 		}
 		fmt.Printf("  %-40s ssl=%-5v %s\n", names, s.SSL, s.CertFile)
 	}
+	manual := hints.NewStore(cfg.Hints.Dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	manual.LoadAll()
+	if files := manual.Snapshot(); len(files) > 0 {
+		fmt.Printf("hints: %s\n", cfg.Hints.Dir)
+		for _, f := range files {
+			if f.Error != "" {
+				fmt.Printf("  %-32s ERROR %s\n", f.File, f.Error)
+				continue
+			}
+			fmt.Printf("  %-32s %d resource(s) for %s\n", f.File, f.Entries, strings.Join(f.Hosts, " "))
+			for _, w := range f.Warnings {
+				fmt.Println("    skipped:", w)
+			}
+		}
+	}
+
 	taken := []string{}
 	if cfg.Server.HTTP != "" {
 		taken = append(taken, cfg.Server.HTTP)
@@ -294,7 +313,19 @@ func runDaemon(cfgPath, pidfile, sock string) (err error) {
 	engine := learn.New(learnParams(mgr.Get()), m, logs.Learn)
 	engine.Start(stop)
 
-	prx := proxy.New(mgr, ng, engine, m, logs)
+	// Manually configured Early Hints, one file per host. They matter
+	// most behind a CDN, where the static resources never reach the
+	// origin and traffic therefore cannot teach them.
+	manual := hints.NewStore(mgr.Get().Hints.Dir, logs.Service)
+	manual.LoadAll()
+	if err := manual.Watch(stop); err != nil {
+		logs.Service.Error("cannot watch the hints directory", "error", err)
+	}
+	if n := manual.Count(); n > 0 {
+		logs.Service.Info("manual hints loaded", "hosts", n)
+	}
+
+	prx := proxy.New(mgr, ng, engine, manual, m, logs)
 	srv := proxy.NewServer(prx, mgr, ng, certStore, logs)
 
 	warmer := preload.New(engine, mgr, prx.Backend, prx.Transport, m, logs.Learn, version)
@@ -312,6 +343,7 @@ func runDaemon(cfgPath, pidfile, sock string) (err error) {
 			}
 			engine.SetParams(learnParams(cfg))
 			prx.Reconfigure()
+			manual.LoadAll()
 		})
 	if err != nil {
 		return err
@@ -325,6 +357,7 @@ func runDaemon(cfgPath, pidfile, sock string) (err error) {
 		Nginx:    ng,
 		Certs:    certStore,
 		Learn:    engine,
+		Hints:    manual,
 		Preload:  warmer,
 		Metrics:  m,
 		LogDir:   paths.LogDir,
@@ -366,6 +399,7 @@ func runDaemon(cfgPath, pidfile, sock string) (err error) {
 			if err := ng.Load(); err != nil {
 				logs.Service.Error("nginx config reload failed", "error", err)
 			}
+			manual.LoadAll()
 			continue
 		}
 		logs.Service.Info("shutting down", "signal", s.String())

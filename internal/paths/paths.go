@@ -12,6 +12,12 @@ const (
 	ConfigDir  = "/etc/rukh"
 	ConfigFile = ConfigDir + "/config.yaml"
 
+	// HintsDir holds one optional YAML file per virtual host, named
+	// after the host, listing resources to announce in Early Hints
+	// when traffic cannot teach them (a CDN in front, a brand new
+	// site).
+	HintsDir = ConfigDir + "/hints"
+
 	// LogDir holds all log files and runtime state. It is the only
 	// path the daemon is guaranteed to be able to write to.
 	LogDir = "/var/log/rukh"

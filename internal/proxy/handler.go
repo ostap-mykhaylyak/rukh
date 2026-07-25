@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
+	"github.com/ostap-mykhaylyak/rukh/internal/hints"
 	"github.com/ostap-mykhaylyak/rukh/internal/learn"
 	"github.com/ostap-mykhaylyak/rukh/internal/logging"
 	"github.com/ostap-mykhaylyak/rukh/internal/metrics"
@@ -57,6 +58,7 @@ type Proxy struct {
 	cfg    *config.Manager
 	ng     *nginx.Store
 	engine *learn.Engine
+	manual *hints.Store
 	m      *metrics.Metrics
 	logs   *logging.Streams
 
@@ -100,8 +102,8 @@ func (s *reqState) kind() string {
 
 // New builds the handler. Reconfigure must be called once (and on
 // every reload) to install the transport and the backend address.
-func New(cfg *config.Manager, ng *nginx.Store, engine *learn.Engine, m *metrics.Metrics, logs *logging.Streams) *Proxy {
-	p := &Proxy{cfg: cfg, ng: ng, engine: engine, m: m, logs: logs}
+func New(cfg *config.Manager, ng *nginx.Store, engine *learn.Engine, manual *hints.Store, m *metrics.Metrics, logs *logging.Streams) *Proxy {
+	p := &Proxy{cfg: cfg, ng: ng, engine: engine, manual: manual, m: m, logs: logs}
 	p.rp = &httputil.ReverseProxy{
 		Rewrite:        p.rewrite,
 		Transport:      roundTripper{p},
@@ -321,7 +323,7 @@ func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Con
 	if r.Header.Get("Sec-Purpose") != "" || r.Header.Get("Purpose") == "prefetch" {
 		return 0
 	}
-	links := learn.LinkPreload(p.engine.Hints(host, key))
+	links := learn.LinkPreload(p.hintsFor(c, host, key))
 	if len(links) == 0 {
 		return 0
 	}
@@ -335,6 +337,36 @@ func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Con
 		p.logs.Learn.Info("early hints", "host", host, "path", key, "links", len(links))
 	}
 	return len(links)
+}
+
+// hintsFor merges the two sources of Early Hints. The manually
+// configured resources come first and are always sent: they are the
+// operator's decision, not a guess, and behind a CDN they are the only
+// thing rukh can know. Learned resources fill whatever room is left up
+// to hints.max_links.
+func (p *Proxy) hintsFor(c *config.Config, host, key string) []learn.Hint {
+	manual := p.manual.Lookup(host, key)
+	learned := p.engine.Hints(host, key)
+	if len(manual) == 0 {
+		return learned
+	}
+	out := make([]learn.Hint, 0, len(manual)+len(learned))
+	seen := make(map[string]bool, len(manual))
+	for _, h := range manual {
+		if seen[h.URL] {
+			continue
+		}
+		seen[h.URL] = true
+		out = append(out, h)
+	}
+	for _, h := range learned {
+		if seen[h.URL] || len(out) >= c.Hints.MaxLinks {
+			continue
+		}
+		seen[h.URL] = true
+		out = append(out, h)
+	}
+	return out
 }
 
 // modifyResponse classifies the response and, for a page, advertises

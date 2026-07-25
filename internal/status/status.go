@@ -15,6 +15,7 @@ import (
 
 	"github.com/ostap-mykhaylyak/rukh/internal/certs"
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
+	"github.com/ostap-mykhaylyak/rukh/internal/hints"
 	"github.com/ostap-mykhaylyak/rukh/internal/learn"
 	"github.com/ostap-mykhaylyak/rukh/internal/metrics"
 	"github.com/ostap-mykhaylyak/rukh/internal/nginx"
@@ -78,6 +79,7 @@ type Snapshot struct {
 	Service   ServiceInfo       `json:"service"`
 	Config    ConfigInfo        `json:"config"`
 	Nginx     *NginxSection     `json:"nginx,omitempty"`
+	Hints     []hints.Info      `json:"hints,omitempty"`
 	Learn     *learn.Stats      `json:"learn,omitempty"`
 	Preload   *preload.Stats    `json:"preload,omitempty"`
 	Checks    []Check           `json:"checks"`
@@ -122,6 +124,7 @@ type Sources struct {
 	Nginx      *nginx.Store
 	Certs      *certs.Store
 	Learn      *learn.Engine
+	Hints      *hints.Store
 	Preload    *preload.Warmer
 	Metrics    *metrics.Metrics
 	LogDir     string
@@ -204,6 +207,26 @@ func NewCollector(s Sources) func() *Snapshot {
 			checks = append(checks, Check{"backend", Crit, addr + " unreachable: " + err.Error()})
 		} else {
 			checks = append(checks, Check{"backend", OK, addr + " reachable"})
+		}
+
+		if s.Hints != nil {
+			files := s.Hints.Snapshot()
+			snap.Hints = files
+			var broken, warned int
+			for _, f := range files {
+				if f.Error != "" {
+					broken++
+				}
+				warned += len(f.Warnings)
+			}
+			switch {
+			case broken > 0:
+				checks = append(checks, Check{"hints_files", Crit,
+					fmt.Sprintf("%d file(s) failed to load, serving the last good version", broken)})
+			case warned > 0:
+				checks = append(checks, Check{"hints_files", Warn,
+					fmt.Sprintf("%d entry(ies) skipped, see rukh.log", warned)})
+			}
 		}
 
 		st := s.Learn.Stats(s.TopPages)

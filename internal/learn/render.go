@@ -18,8 +18,16 @@ func LinkPreload(hints []Hint) []string {
 		var b strings.Builder
 		b.WriteByte('<')
 		b.WriteString(escapeURL(h.URL))
-		b.WriteString(">; rel=preload; as=")
-		b.WriteString(h.As)
+		b.WriteString(">; rel=")
+		switch h.Rel {
+		case "", "preload":
+			b.WriteString("preload; as=")
+			b.WriteString(h.As)
+		default:
+			// preconnect / dns-prefetch: an origin, not a resource, so
+			// there is no "as" to declare.
+			b.WriteString(h.Rel)
+		}
 		if h.CrossOrigin {
 			b.WriteString("; crossorigin")
 		}

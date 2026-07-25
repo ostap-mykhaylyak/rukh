@@ -154,7 +154,7 @@ Service verbs are bare words; everything else takes a leading `--`.
 | `rukh status --json` | stable JSON, for monitoring |
 | `rukh --init` | install layout, binary, unit, logrotate |
 | `rukh --purge` | remove config, logs and the binary (asks first) |
-| `rukh --check-config` | parse config + nginx setup and report |
+| `rukh --check-config` | parse config, nginx setup and hints files, and report |
 | `rukh --version` | print the version |
 
 `rukh status` exits with the Nagios convention: `0` OK, `1` WARNING,
@@ -185,6 +185,38 @@ other cancels that bias out. A resource is announced only if it is
 requested reliably (`hints.min_confidence`), often enough to be trusted
 (`hints.min_samples`) and recently (`hints.max_age`). Stylesheets go
 first, then fonts (always with `crossorigin`), then scripts.
+
+**When traffic cannot teach: manual hints.** Behind a CDN that serves
+static files from its edge — Cloudflare being the obvious case — those
+requests never reach this server, so there is nothing to learn from:
+the HTML still arrives, the CSS does not. Write the answer down
+instead, one file per host in `/etc/rukh/hints`, named after the host:
+
+```yaml
+# /etc/rukh/hints/example.com.yaml
+hosts: [example.com, www.example.com]   # optional, defaults to the file name
+
+default:                                 # every page of this host
+  - /wp-content/themes/mytheme/style.css # type inferred from the extension
+  - url: /wp-content/themes/mytheme/inter.woff2
+    as: font                             # fonts always get crossorigin
+  - url: https://cdn.example.net
+    rel: preconnect                      # open a third-party connection early
+
+paths:                                   # added on top of the defaults
+  "/":
+    - /wp-content/uploads/hero.webp
+  "/product/*":                          # * matches by prefix
+    - /wp-content/plugins/woocommerce/assets/css/woocommerce.css
+```
+
+The files are watched: saving one applies it immediately. Manual
+entries are always sent and come first — they are a decision, not a
+guess — and the learned ones fill the remaining slots up to
+`hints.max_links`. A file that stops parsing keeps serving its last
+good version, and a single invalid entry is skipped with a warning
+rather than costing the whole file. `rukh --check-config` lists what
+was loaded.
 
 **Navigation paths.** A navigation whose referrer is another page of
 the same host is a transition. When one destination dominates
