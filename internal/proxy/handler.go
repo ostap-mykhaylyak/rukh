@@ -293,6 +293,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"duration_ms", float64(elapsed.Microseconds())/1000,
 			"origin_ms", float64(st.origin.Microseconds())/1000,
 			"kind", st.kind(),
+			"speculative", isSpeculative(r),
 			"client", p.rip.Load().clientIP(r),
 			"proto", r.Proto,
 			"hints", hints,
@@ -360,13 +361,31 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 		st.as = asType(resp.Request, ct)
 	}
 
-	if st.page && resp.StatusCode == http.StatusOK && c.Prefetch.Enabled {
+	// A page the browser fetched speculatively is never rendered, so it
+	// gets no suggestions of its own: hinting it would chain one
+	// speculation to the next.
+	if st.page && resp.StatusCode == http.StatusOK && c.Prefetch.Enabled && !isSpeculative(resp.Request) {
 		host := hostOnly(resp.Request.Host)
 		target := resp.Request.URL.EscapedPath()
 		if resp.Request.URL.RawQuery != "" {
 			target += "?" + resp.Request.URL.RawQuery
 		}
-		if links := learn.LinkPrefetch(p.engine.Prefetch(host, learn.NormalizePath(target))); len(links) > 0 {
+		key := learn.NormalizePath(target)
+		// Never suggest the page the visitor just came from: going back
+		// is the most common transition there is, and the browser
+		// already has that page. Nor the page itself.
+		back := refererPath(resp.Request, resp.Request.Host)
+		if back != "" {
+			back = learn.NormalizePath(back)
+		}
+		var next []string
+		for _, n := range p.engine.Prefetch(host, key) {
+			if n == key || n == back {
+				continue
+			}
+			next = append(next, n)
+		}
+		if links := learn.LinkPrefetch(next); len(links) > 0 {
 			for _, l := range links {
 				resp.Header.Add("Link", l)
 			}
@@ -395,6 +414,11 @@ func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, k
 	}
 	if r.Header.Get(preloadHeader) != "" {
 		return // never learn from our own warm-up traffic
+	}
+	if isSpeculative(r) {
+		// Nor from a prefetch rukh itself asked for: a model trained on
+		// its own predictions stops describing the visitors.
+		return
 	}
 	client := peer(r)
 	// An empty referrer must stay empty: normalizing it would turn it

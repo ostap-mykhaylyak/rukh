@@ -191,6 +191,16 @@ the same host is a transition. When one destination dominates
 (`prefetch.min_probability`), it is advertised on the page response as
 `Link: </next>; rel=prefetch`.
 
+**rukh never learns from its own suggestions.** A prefetch the browser
+performs on rukh's advice comes back as an ordinary GET carrying the
+suggesting page as its Referer; counting it would make every
+prediction confirm itself and climb to certainty on its own. Requests
+marked `Sec-Purpose: prefetch` (and the older spellings) are therefore
+excluded from the model entirely, they receive no hints of their own,
+and no page ever suggests going back to the page the visitor just came
+from. Speculative requests are flagged in the access log
+(`"speculative": true`) so their share is visible.
+
 **Decay.** Every counter is exponentially decayed with a configurable
 half-life (default 6h): recent traffic always dominates, and anything
 nobody touches fades to zero and is dropped by the sweep. That is also

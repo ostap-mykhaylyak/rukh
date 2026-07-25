@@ -406,3 +406,82 @@ func TestBackendAutoDetectionFromNginx(t *testing.T) {
 		t.Fatalf("backend = %+v, want the loopback plain listener, auto-detected", b)
 	}
 }
+
+// A prefetch rukh suggested comes back as an ordinary GET carrying the
+// suggesting page as its Referer. If it were counted, the prediction
+// would confirm itself and climb to certainty on its own.
+func TestSpeculativeRequestsDoNotFeedTheModel(t *testing.T) {
+	env := newEnv(t, "")
+
+	// Real navigations: four visitors go from / to /next.
+	env.get(t, "/", nil)
+	for i := 0; i < 4; i++ {
+		env.get(t, "/next", map[string]string{"Referer": "http://example.test/"})
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(env.engine.Prefetch("example.test", "/")) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	before := env.engine.Stats(0)
+
+	// Now the browser acts on the hint, twenty times over.
+	for i := 0; i < 20; i++ {
+		env.get(t, "/next", map[string]string{
+			"Referer":     "http://example.test/",
+			"Sec-Purpose": "prefetch",
+		})
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	after := env.engine.Stats(10)
+	if after.Transitions != before.Transitions {
+		t.Errorf("transitions %d -> %d: speculative traffic must not be learned",
+			before.Transitions, after.Transitions)
+	}
+	for _, p := range after.TopPages {
+		if p.Path == "/next" && p.Views > 4.5 {
+			t.Errorf("/next has %.1f views: the prefetches were counted as visits", p.Views)
+		}
+	}
+}
+
+// A prefetched page is never rendered, so it must not carry hints of
+// its own, and no page should ever suggest going back where the
+// visitor came from.
+func TestPrefetchLinksAreNotChainedOrSentBackwards(t *testing.T) {
+	env := newEnv(t, "")
+
+	// Teach the round trip: / -> /next and /next -> /.
+	env.get(t, "/", nil)
+	for i := 0; i < 4; i++ {
+		env.get(t, "/next", map[string]string{"Referer": "http://example.test/"})
+		env.get(t, "/", map[string]string{"Referer": "http://example.test/next"})
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(env.engine.Prefetch("example.test", "/next")) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Arriving on /next from /: the only candidate is / itself, which
+	// is where the visitor came from.
+	resp := env.get(t, "/next", map[string]string{"Referer": "http://example.test/"})
+	for _, l := range resp.Header.Values("Link") {
+		if strings.Contains(l, "rel=prefetch") {
+			t.Errorf("suggested going back to the referring page: %q", l)
+		}
+	}
+
+	// And a speculative request gets no suggestions at all.
+	resp = env.get(t, "/", map[string]string{"Sec-Purpose": "prefetch"})
+	for _, l := range resp.Header.Values("Link") {
+		if strings.Contains(l, "rel=prefetch") {
+			t.Errorf("chained a prefetch onto a prefetched page: %q", l)
+		}
+	}
+}

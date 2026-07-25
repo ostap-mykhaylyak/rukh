@@ -78,6 +78,31 @@ func wantsHTML(req *http.Request) bool {
 	return strings.Contains(req.Header.Get("Accept"), "text/html")
 }
 
+// isSpeculative reports whether a request was made by the browser on
+// its own initiative — a prefetch or a prerender — rather than by a
+// visitor.
+//
+// This matters more than it looks: a prefetch rukh itself suggested
+// arrives back as a perfectly ordinary GET, with the suggesting page
+// as its Referer. Counting it would make every prediction confirm
+// itself, the probability would climb to certainty on its own, and the
+// model would end up describing rukh's guesses instead of the
+// visitors' behaviour.
+func isSpeculative(req *http.Request) bool {
+	// Sec-Purpose is the current header (Chrome, Edge); the others are
+	// the historical spellings still emitted by some clients.
+	if p := req.Header.Get("Sec-Purpose"); p != "" {
+		return strings.Contains(p, "prefetch") || strings.Contains(p, "prerender")
+	}
+	for _, h := range []string{"Purpose", "X-Purpose", "X-Moz"} {
+		switch strings.ToLower(req.Header.Get(h)) {
+		case "prefetch", "preview", "prerender":
+			return true
+		}
+	}
+	return false
+}
+
 // refererPath returns the path of the referring page when it belongs
 // to the same host, normalized like every other model key. Anything
 // cross-origin is invisible to the model on purpose.

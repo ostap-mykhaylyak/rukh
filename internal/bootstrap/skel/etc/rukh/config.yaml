@@ -68,6 +68,9 @@ hints:
   http1: false                # browsers act on 103 over HTTP/2 and HTTP/3
 
 # --- navigation prediction (Link rel=prefetch on the page response) ---
+# The browser downloads the likely next page in the background. Traffic
+# generated this way is never learned from and never chained to another
+# suggestion, so a prediction cannot reinforce itself.
 prefetch:
   enabled: true
   min_probability: 0.35
