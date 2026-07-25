@@ -769,9 +769,11 @@ type Stats struct {
 	Events      int64     `json:"events"`
 	Dropped     int64     `json:"dropped"`
 	TopPages    []TopPage `json:"top_pages,omitempty"`
+	SlowPages   []TopPage `json:"slow_pages,omitempty"`
 }
 
-// TopPage is one entry of the "what is hot right now" list.
+// TopPage is one entry of the "what is hot right now" and "what is
+// slow right now" lists.
 type TopPage struct {
 	Host      string  `json:"host"`
 	Path      string  `json:"path"`
@@ -781,7 +783,10 @@ type TopPage struct {
 	LatencyMs float64 `json:"latency_ms"`
 }
 
-// Stats returns a snapshot of the model size and its hottest pages.
+// Stats returns a snapshot of the model size, its hottest pages and
+// its slowest ones. The two lists answer different questions — where
+// the traffic is, and where the time goes — and a page appearing in
+// both is exactly what the preloader should be working on.
 func (e *Engine) Stats(topN int) Stats {
 	p := e.p()
 	now := e.now()
@@ -814,6 +819,20 @@ func (e *Engine) Stats(topN int) Stats {
 			}
 		}
 	}
+	// Slowest first: the origin latency is the EWMA of what nginx took
+	// to answer, so a page that got faster leaves the list on its own.
+	slow := make([]TopPage, 0, len(top))
+	for _, t := range top {
+		if t.LatencyMs > 0 {
+			slow = append(slow, t)
+		}
+	}
+	sort.Slice(slow, func(i, j int) bool { return slow[i].LatencyMs > slow[j].LatencyMs })
+	if len(slow) > topN {
+		slow = slow[:topN]
+	}
+	st.SlowPages = slow
+
 	sort.Slice(top, func(i, j int) bool { return top[i].Views > top[j].Views })
 	if len(top) > topN {
 		top = top[:topN]

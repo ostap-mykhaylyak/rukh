@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/ostap-mykhaylyak/rukh/internal/learn"
 )
 
 // Query connects to the daemon's status socket and returns the
@@ -106,10 +108,8 @@ func report(w io.Writer, snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed t
 	if lr := snap.Learn; lr != nil {
 		fmt.Fprintf(w, "model:    %d host(s), %d page(s), %d asset(s), %d transition(s), %d hinted, %d dropped\n",
 			lr.Hosts, lr.Pages, lr.Assets, lr.Transitions, lr.HintedPages, lr.Dropped)
-		for _, t := range lr.TopPages {
-			fmt.Fprintf(w, "  %8.1f views %3d assets %3d hints %7.0fms  %s\n",
-				t.Views, t.Assets, t.Hints, t.LatencyMs, t.Host+t.Path)
-		}
+		pageList(w, "busiest:", lr.TopPages)
+		pageList(w, "slowest:", lr.SlowPages)
 	}
 	if p := snap.Preload; p != nil {
 		state := "disabled"
@@ -130,6 +130,16 @@ func report(w io.Writer, snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed t
 		parts = append(parts, c.Name+"="+c.Status)
 	}
 	fmt.Fprintf(w, "checks:   %s\n", strings.Join(parts, " "))
+}
+
+// pageList renders one ranking of pages, address last so it is never
+// cut. Latency is what the origin took to answer, not what the
+// visitor's connection added.
+func pageList(w io.Writer, name string, pages []learn.TopPage) {
+	for i, t := range pages {
+		fmt.Fprintf(w, "%-10s%8.1f views %3d assets %3d hints %7.0fms  %s\n",
+			label(i, name), t.Views, t.Assets, t.Hints, t.LatencyMs, t.Host+t.Path)
+	}
 }
 
 // label prints a column heading on the first row of a list only, so a

@@ -312,3 +312,29 @@ func TestEscapeURLDropsHeaderInjection(t *testing.T) {
 		t.Fatalf("link = %q", got)
 	}
 }
+
+func TestStatsRanksBusiestAndSlowestSeparately(t *testing.T) {
+	e, now := newTestEngine(t, testParams())
+	// A hot but fast page, and a rare but expensive one.
+	for i := 0; i < 20; i++ {
+		e.apply(Event{Kind: KindPage, Host: "example.com", Path: "/", Status: 200,
+			Cacheable: true, Latency: 12 * time.Millisecond, At: *now})
+	}
+	e.apply(Event{Kind: KindPage, Host: "example.com", Path: "/checkout", Status: 200,
+		Cacheable: true, Latency: 900 * time.Millisecond, At: *now})
+
+	st := e.Stats(10)
+	if len(st.TopPages) != 2 || st.TopPages[0].Path != "/" {
+		t.Fatalf("busiest = %+v, want the homepage first", st.TopPages)
+	}
+	if len(st.SlowPages) != 2 || st.SlowPages[0].Path != "/checkout" {
+		t.Fatalf("slowest = %+v, want the expensive page first", st.SlowPages)
+	}
+	if st.SlowPages[0].LatencyMs < 800 {
+		t.Fatalf("latency = %v, want the origin time in milliseconds", st.SlowPages[0].LatencyMs)
+	}
+	// A page nobody has timed yet must not appear as "fast".
+	if len(e.Stats(0).SlowPages) != 0 {
+		t.Error("Stats(0) must not build the lists at all")
+	}
+}

@@ -24,6 +24,10 @@ func sampleSnapshot() *Snapshot {
 			{Host: "petralito.example", Path: "/", Views: 33, LatencyMs: 10},
 			{Host: "petralito.example", Path: longPath, Views: 1.9, Assets: 3, Hints: 2, LatencyMs: 371},
 		},
+		SlowPages: []learn.TopPage{
+			{Host: "petralito.example", Path: longPath, Views: 1.9, Assets: 3, Hints: 2, LatencyMs: 371},
+			{Host: "petralito.example", Path: "/", Views: 33, LatencyMs: 10},
+		},
 	}
 	ps := preload.Stats{Enabled: true, PlanSize: 33, Next: []string{
 		"petralito.example" + longPath,
@@ -69,6 +73,26 @@ func TestWatchViewShowsWholeAddresses(t *testing.T) {
 		if strings.Contains(line, longPath) && !strings.HasSuffix(line, longPath) {
 			t.Errorf("the address must end the line: %q", line)
 		}
+	}
+}
+
+func TestWatchViewListsBusiestAndSlowestPages(t *testing.T) {
+	var buf bytes.Buffer
+	report(&buf, sampleSnapshot(), false, sampleSnapshot(), 2*time.Second)
+	out := buf.String()
+
+	busiest := strings.Index(out, "busiest:")
+	slowest := strings.Index(out, "slowest:")
+	if busiest < 0 || slowest < 0 {
+		t.Fatalf("both rankings must be labelled:\n%s", out)
+	}
+	if slowest < busiest {
+		t.Error("the busiest pages come first, the slowest after")
+	}
+	// The slow list is ordered by the origin latency, worst first.
+	slowBlock := out[slowest:]
+	if i, j := strings.Index(slowBlock, "371ms"), strings.Index(slowBlock, "10ms"); i < 0 || j < 0 || i > j {
+		t.Errorf("the slowest page must head the list:\n%s", slowBlock)
 	}
 }
 
