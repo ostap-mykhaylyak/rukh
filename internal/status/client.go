@@ -3,6 +3,7 @@ package status
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -31,7 +32,7 @@ func Query(sock string, timeout time.Duration) (*Snapshot, error) {
 func Run(version, sock, cfgPath string, jsonOut bool, watch time.Duration) int {
 	if watch <= 0 {
 		snap := fetch(version, sock, cfgPath)
-		print(snap, jsonOut, nil, 0)
+		report(os.Stdout, snap, jsonOut, nil, 0)
 		return ExitCode(snap.Status)
 	}
 
@@ -44,7 +45,7 @@ func Run(version, sock, cfgPath string, jsonOut bool, watch time.Duration) int {
 		if !jsonOut {
 			fmt.Print("\033[2J\033[H") // clear screen, home cursor
 		}
-		print(snap, jsonOut, prev, time.Since(prevAt))
+		report(os.Stdout, snap, jsonOut, prev, time.Since(prevAt))
 		prev, prevAt = snap, time.Now()
 		time.Sleep(watch)
 	}
@@ -58,30 +59,33 @@ func fetch(version, sock, cfgPath string) *Snapshot {
 	return snap
 }
 
-func print(snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed time.Duration) {
+// report renders a snapshot. Variable-length values (hostnames, paths,
+// certificate subjects) always come last on their line, so nothing has
+// to be truncated: a long product URL stays readable and copyable.
+func report(w io.Writer, snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed time.Duration) {
 	if jsonOut {
-		json.NewEncoder(os.Stdout).Encode(snap)
+		json.NewEncoder(w).Encode(snap)
 		return
 	}
-	fmt.Println(summaryLine(snap))
+	fmt.Fprintln(w, summaryLine(snap))
 	if prev == nil {
 		return
 	}
 
 	// watch mode: multi-line view with rates computed between ticks.
-	fmt.Printf("config:   %s (%s)\n", boolWord(snap.Config.Valid, "valid", "INVALID"), snap.Config.Path)
+	fmt.Fprintf(w, "config:   %s (%s)\n", boolWord(snap.Config.Valid, "valid", "INVALID"), snap.Config.Path)
 	if n := snap.Nginx; n != nil {
-		fmt.Printf("nginx:    %d site(s), backend %s%s\n", n.Sites, n.Backend, autoWord(n.BackendAut))
-		if len(n.Hosts) > 0 {
-			fmt.Printf("hosts:    %s\n", strings.Join(n.Hosts, " "))
+		fmt.Fprintf(w, "nginx:    %d site(s), backend %s%s\n", n.Sites, n.Backend, autoWord(n.BackendAut))
+		for i, h := range n.Hosts {
+			fmt.Fprintf(w, "%-10s%s\n", label(i, "hosts:"), h)
 		}
 		for _, c := range n.Certs {
 			if c.Error != "" {
-				fmt.Printf("cert:     %s ERROR %s\n", c.CertFile, c.Error)
+				fmt.Fprintf(w, "cert:     ERROR %s (%s)\n", c.Error, c.CertFile)
 				continue
 			}
-			fmt.Printf("cert:     %-40s %s (%.0f days)\n", c.Subject, c.NotAfter.Format("2006-01-02"),
-				time.Until(c.NotAfter).Hours()/24)
+			fmt.Fprintf(w, "cert:     until %s, %.0f days left  %s\n",
+				c.NotAfter.Format("2006-01-02"), time.Until(c.NotAfter).Hours()/24, c.Subject)
 		}
 	}
 	if l := snap.Live; l != nil {
@@ -90,21 +94,21 @@ func print(snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed time.Duration) 
 			reqRate = float64(l.RequestsTotal-prev.Live.RequestsTotal) / elapsed.Seconds()
 			errRate = float64(l.ErrorsTotal-prev.Live.ErrorsTotal) / elapsed.Seconds()
 		}
-		fmt.Printf("requests: %d total, %d in-flight, %.1f req/s, %.1f err/s\n",
+		fmt.Fprintf(w, "requests: %d total, %d in-flight, %.1f req/s, %.1f err/s\n",
 			l.RequestsTotal, l.RequestsInFlight, reqRate, errRate)
-		fmt.Printf("latency:  p50 %.0fms, p95 %.0fms, p99 %.0fms\n",
+		fmt.Fprintf(w, "latency:  p50 %.0fms, p95 %.0fms, p99 %.0fms\n",
 			l.P50LatencyMs, l.P95LatencyMs, l.P99LatencyMs)
-		fmt.Printf("traffic:  %d page(s), %d asset(s), %s out\n",
+		fmt.Fprintf(w, "traffic:  %d page(s), %d asset(s), %s out\n",
 			l.PageViews, l.AssetHits, humanBytes(l.BytesOutTotal))
-		fmt.Printf("hints:    %d response(s), %d link(s), %d prefetch link(s)\n",
+		fmt.Fprintf(w, "hints:    %d response(s), %d link(s), %d prefetch link(s)\n",
 			l.HintsSent, l.HintLinks, l.PrefetchLinks)
 	}
 	if lr := snap.Learn; lr != nil {
-		fmt.Printf("model:    %d host(s), %d page(s), %d asset(s), %d transition(s), %d hinted, %d dropped\n",
+		fmt.Fprintf(w, "model:    %d host(s), %d page(s), %d asset(s), %d transition(s), %d hinted, %d dropped\n",
 			lr.Hosts, lr.Pages, lr.Assets, lr.Transitions, lr.HintedPages, lr.Dropped)
 		for _, t := range lr.TopPages {
-			fmt.Printf("  %-45s %7.1f views  %2d assets  %2d hints  %6.0fms\n",
-				trunc(t.Host+t.Path, 45), t.Views, t.Assets, t.Hints, t.LatencyMs)
+			fmt.Fprintf(w, "  %8.1f views %3d assets %3d hints %7.0fms  %s\n",
+				t.Views, t.Assets, t.Hints, t.LatencyMs, t.Host+t.Path)
 		}
 	}
 	if p := snap.Preload; p != nil {
@@ -116,16 +120,25 @@ func print(snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed time.Duration) 
 				state += " (backing off)"
 			}
 		}
-		fmt.Printf("preload:  %s\n", state)
-		if len(p.Next) > 0 {
-			fmt.Printf("  next:   %s\n", strings.Join(p.Next, " "))
+		fmt.Fprintf(w, "preload:  %s\n", state)
+		for i, n := range p.Next {
+			fmt.Fprintf(w, "%-10s%s\n", label(i, "  next:"), n)
 		}
 	}
 	parts := make([]string, 0, len(snap.Checks))
 	for _, c := range snap.Checks {
 		parts = append(parts, c.Name+"="+c.Status)
 	}
-	fmt.Printf("checks:   %s\n", strings.Join(parts, " "))
+	fmt.Fprintf(w, "checks:   %s\n", strings.Join(parts, " "))
+}
+
+// label prints a column heading on the first row of a list only, so a
+// multi-line list reads as one block.
+func label(i int, name string) string {
+	if i == 0 {
+		return name
+	}
+	return ""
 }
 
 func summaryLine(snap *Snapshot) string {
@@ -181,13 +194,6 @@ func autoWord(auto bool) string {
 		return " (auto-detected)"
 	}
 	return ""
-}
-
-func trunc(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
 
 func humanBytes(n int64) string {
