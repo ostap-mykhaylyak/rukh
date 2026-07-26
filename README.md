@@ -322,6 +322,34 @@ jq -r 'select(.msg=="request") | [.origin_ms, .duration_ms, .kind, .status, .pat
 Rotation is logrotate's job (policy installed by `--init`); SIGHUP
 reopens the files.
 
+## rukh has to be the outermost hop
+
+Early Hints are the one thing that cannot survive a proxy in front:
+**no version of nginx forwards a 103 from its upstream** — it has
+never implemented Early Hints, in either direction — and most other
+front proxies drop informational responses too. Put anything between
+rukh and the visitor and the 103 dies there.
+
+What does survive is the `Link` header on the final response, which
+rukh sends as well: the browser still starts those downloads when the
+HTML headers arrive, instead of when the parser reaches the tag. It is
+a smaller win — the "early" part, the head start while the origin is
+still generating the page, is what is lost.
+
+One front proxy is the exception worth knowing: **Cloudflare rebuilds
+the 103 at its edge** from exactly those `Link` headers, when Early
+Hints is enabled in its dashboard. Behind Cloudflare the visitor gets
+a real 103 again, generated one hop closer to them than rukh could.
+
+Two settings matter when something is in front:
+
+- `realip.trusted_proxies` must list it, or every request appears to
+  come from the same address and the traffic model treats all visitors
+  as one;
+- `server.http3: false`, because the Alt-Svc advertisement would name a
+  port the front proxy does not serve over QUIC. rukh warns about this
+  combination.
+
 ## Protocols and overhead
 
 **Visitors get the best protocol their client supports.** The TLS

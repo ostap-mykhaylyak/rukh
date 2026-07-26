@@ -502,7 +502,12 @@ func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host st
 		// its own predictions stops describing the visitors.
 		return
 	}
-	client := peer(r)
+	// The resolved client, not the peer: with a CDN or another proxy in
+	// front, every request arrives from the same handful of addresses,
+	// and the model would treat all visitors as one — attributing one
+	// visitor's stylesheet to another visitor's page whenever the
+	// referrer is missing.
+	client := st.client
 	// An empty referrer must stay empty: normalizing it would turn it
 	// into "/" and credit the homepage for resources it never loaded.
 	ref := refererPath(r, r.Host)

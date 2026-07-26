@@ -571,3 +571,36 @@ paths:
 		t.Errorf("the learned resource is missing: %v", got)
 	}
 }
+
+// Behind a CDN or a front proxy every request arrives from the same
+// few addresses. If the model identified visitors by the peer, they
+// would all be one visitor, and the fallback that attributes a
+// referrer-less subresource to "the page this client just opened"
+// would cross-wire two strangers.
+func TestVisitorsBehindAProxyAreNotConflated(t *testing.T) {
+	env := newEnv(t, "realip:\n  trusted_proxies: [\"127.0.0.0/8\"]\n")
+
+	// Visitor A opens /, five times: enough to be trusted.
+	for i := 0; i < 5; i++ {
+		env.get(t, "/", map[string]string{
+			"X-Forwarded-For": "203.0.113.10",
+			"Sec-Fetch-Dest":  "document",
+		})
+	}
+	// Visitor B, arriving through the same proxy, loads a stylesheet
+	// with no referrer. It belongs to whatever B is looking at — never
+	// to A's page.
+	for i := 0; i < 5; i++ {
+		env.get(t, "/style.css", map[string]string{
+			"X-Forwarded-For": "203.0.113.99",
+			"Sec-Fetch-Dest":  "style",
+		})
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	for _, h := range env.engine.Hints("example.test", "/") {
+		if h.URL == "/style.css" {
+			t.Fatal("another visitor's stylesheet was attributed to this page")
+		}
+	}
+}

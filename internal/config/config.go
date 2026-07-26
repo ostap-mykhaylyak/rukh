@@ -308,6 +308,15 @@ func (c *Config) validate() error {
 	if len(c.RealIP.TrustedProxies) > 0 && c.RealIP.Header == "" {
 		return fmt.Errorf("realip.header is required when realip.trusted_proxies is set")
 	}
+	// Something in front means the Alt-Svc advertisement names a port
+	// the visitor reaches on that other hop, not on rukh: the browser
+	// tries QUIC there, fails, and falls back — a wasted round trip on
+	// every first visit.
+	if c.Server.HTTP3 && len(c.RealIP.TrustedProxies) > 0 {
+		c.Warnings = append(c.Warnings,
+			"server.http3 is enabled while realip.trusted_proxies lists a proxy in front: "+
+				"the Alt-Svc advertisement would point at a port that proxy does not serve over QUIC")
+	}
 
 	if c.Learn.HalfLife.Std() <= 0 {
 		return fmt.Errorf("learn.half_life must be positive")

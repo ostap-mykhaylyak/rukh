@@ -85,7 +85,9 @@ func TestInvalidValuesAreRejected(t *testing.T) {
 }
 
 func TestInvalidTrustedProxyIsSkippedNotFatal(t *testing.T) {
-	c, err := Load(write(t, "realip:\n  trusted_proxies: [\"10.0.0.0/8\", \"garbage\", \"192.0.2.7\"]\n"))
+	// http3 off: a proxy in front warns about that too, and it is not
+	// what this test is about.
+	c, err := Load(write(t, "server:\n  http3: false\nrealip:\n  trusted_proxies: [\"10.0.0.0/8\", \"garbage\", \"192.0.2.7\"]\n"))
 	if err != nil {
 		t.Fatalf("a bad list entry must never prevent the load: %v", err)
 	}
@@ -141,5 +143,28 @@ func TestHTTP3NeedsTheTLSEntrypoint(t *testing.T) {
 	}
 	if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "http3") {
 		t.Errorf("warnings = %v", c.Warnings)
+	}
+}
+
+// Something in front means the Alt-Svc advertisement names a port that
+// other hop does not serve over QUIC: the browser tries, fails, and
+// falls back, once per visitor.
+func TestHTTP3BehindAProxyWarns(t *testing.T) {
+	c, err := Load(write(t, "realip:\n  trusted_proxies: [\"127.0.0.1\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range c.Warnings {
+		if strings.Contains(w, "http3") && strings.Contains(w, "trusted_proxies") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v", c.Warnings)
+	}
+	// It stays enabled: rukh reports the risk, the operator decides.
+	if !c.Server.HTTP3 {
+		t.Error("the warning must not silently turn the feature off")
 	}
 }
