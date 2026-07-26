@@ -232,3 +232,30 @@ func TestRenderedLinkHeaders(t *testing.T) {
 		}
 	}
 }
+
+// WordPress emits every asset with a ?ver= cache buster, so the type
+// must be inferred past the query and the URL must reach the header
+// byte for byte: a preload whose URL differs from the one the page
+// requests is downloaded twice.
+func TestVersionedAssetURLs(t *testing.T) {
+	h := load(t, `
+default:
+  - /wp-content/themes/officina-vespa/assets/css/main.css?ver=1784486021
+  - /wp-content/themes/officina-vespa/assets/css/skin-petralito.css?ver=1784486021
+  - /wp-includes/js/jquery/jquery.min.js?ver=3.7.1
+`)
+	want := []string{
+		"</wp-content/themes/officina-vespa/assets/css/main.css?ver=1784486021>; rel=preload; as=style",
+		"</wp-content/themes/officina-vespa/assets/css/skin-petralito.css?ver=1784486021>; rel=preload; as=style",
+		"</wp-includes/js/jquery/jquery.min.js?ver=3.7.1>; rel=preload; as=script",
+	}
+	got := learn.LinkPreload(h.Lookup("/"))
+	if len(got) != len(want) {
+		t.Fatalf("links = %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("link %d =\n  %q\nwant\n  %q", i, got[i], want[i])
+		}
+	}
+}
