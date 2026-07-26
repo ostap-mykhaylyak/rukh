@@ -80,11 +80,32 @@ type reqState struct {
 	// It is what the origin is responsible for; the total request
 	// duration also contains sending the body to the client, which a
 	// slow phone inflates and the backend cannot be blamed for.
-	origin    time.Duration
+	origin time.Duration
+	// client is resolved once per request: the forwarding headers and
+	// the access line both need it, and resolving it walks the
+	// forwarded chain.
+	client    string
+	forwarded string
 	page      bool
 	as        string
 	status    int
 	cacheable bool
+	// key is the model key of the request target, computed at most
+	// once and only when something actually needs it.
+	target string
+	key    string
+	keyed  bool
+}
+
+// modelKey normalizes the request target for the traffic model. Assets
+// vastly outnumber pages and most of them never need it, so it is
+// computed on demand.
+func (s *reqState) modelKey() string {
+	if !s.keyed {
+		s.key = learn.NormalizePath(s.target)
+		s.keyed = true
+	}
+	return s.key
 }
 
 // kind labels a request in the access log, so "which resources are
@@ -218,7 +239,7 @@ func (p *Proxy) transportFor(host string) *http.Transport {
 // rewrite prepares the request for nginx.
 func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	b := p.backend.Load()
-	rip := p.rip.Load()
+	st, _ := pr.In.Context().Value(stateKey{}).(*reqState)
 
 	pr.Out.URL.Scheme = "http"
 	if b.TLS {
@@ -232,8 +253,15 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	if pr.In.TLS != nil {
 		proto = "https"
 	}
-	pr.Out.Header.Set("X-Forwarded-For", rip.forwardedFor(pr.In))
-	pr.Out.Header.Set("X-Real-IP", rip.clientIP(pr.In))
+	client, forwarded := "", ""
+	if st != nil {
+		client, forwarded = st.client, st.forwarded
+	} else { // preloader and tests reach the transport without state
+		rip := p.rip.Load()
+		client, forwarded = rip.clientIP(pr.In), rip.forwardedFor(pr.In)
+	}
+	pr.Out.Header.Set("X-Forwarded-For", forwarded)
+	pr.Out.Header.Set("X-Real-IP", client)
 	pr.Out.Header.Set("X-Forwarded-Proto", proto)
 	pr.Out.Header.Set("X-Forwarded-Host", pr.In.Host)
 	if port != "" {
@@ -264,7 +292,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	key := learn.NormalizePath(target)
 
 	if r.TLS == nil && c.Server.RedirectHTTPS && !strings.HasPrefix(r.URL.Path, "/.well-known/") {
 		u := *r.URL
@@ -274,16 +301,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hints := p.earlyHints(w, r, c, host, key)
+	rip := p.rip.Load()
+	st := &reqState{
+		start:     start,
+		target:    target,
+		client:    rip.clientIP(r),
+		forwarded: rip.forwardedFor(r),
+	}
 
-	st := &reqState{start: start}
+	hints := p.earlyHints(w, r, c, host, st)
+
 	rec := &recorder{ResponseWriter: w}
 	p.rp.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), stateKey{}, st)))
 
 	elapsed := time.Since(start)
 	done(rec.bytes, rec.status >= 500)
 
-	p.observe(r, st, c, host, key, elapsed)
+	p.observe(r, st, c, host, elapsed)
 
 	if c.Log.Access {
 		p.logs.Access.Info("request",
@@ -296,7 +330,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"origin_ms", float64(st.origin.Microseconds())/1000,
 			"kind", st.kind(),
 			"speculative", isSpeculative(r),
-			"client", p.rip.Load().clientIP(r),
+			"client", st.client,
+			"scheme", scheme(r),
 			"proto", r.Proto,
 			"hints", hints,
 		)
@@ -305,7 +340,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // earlyHints sends the 103 response when the model knows what this
 // page pulls in, and returns how many resources were announced.
-func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Config, host, key string) int {
+func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Config, host string, st *reqState) int {
 	if !c.Hints.Enabled || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		return 0
 	}
@@ -323,7 +358,7 @@ func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Con
 	if r.Header.Get("Sec-Purpose") != "" || r.Header.Get("Purpose") == "prefetch" {
 		return 0
 	}
-	links := learn.LinkPreload(p.hintsFor(c, host, key))
+	links := learn.LinkPreload(p.hintsFor(c, host, st.modelKey()))
 	if len(links) == 0 {
 		return 0
 	}
@@ -334,7 +369,7 @@ func (p *Proxy) earlyHints(w http.ResponseWriter, r *http.Request, c *config.Con
 	w.WriteHeader(http.StatusEarlyHints)
 	p.m.HintsSent(len(links))
 	if c.Log.Learn {
-		p.logs.Learn.Info("early hints", "host", host, "path", key, "links", len(links))
+		p.logs.Learn.Info("early hints", "host", host, "path", st.modelKey(), "links", len(links))
 	}
 	return len(links)
 }
@@ -430,7 +465,7 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 // observe feeds the traffic model. Only successful, non-authenticated
 // GET traffic teaches anything: an error page has no resources worth
 // preloading and a logged-in page is personalized by definition.
-func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, key string, elapsed time.Duration) {
+func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host string, elapsed time.Duration) {
 	// The preloader prioritizes slow pages: "slow" must mean slow at
 	// the origin, otherwise a visitor on a bad connection would make a
 	// fast page look expensive.
@@ -459,6 +494,7 @@ func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, k
 	if ref != "" {
 		ref = learn.NormalizePath(ref)
 	}
+	key := st.modelKey()
 	switch {
 	case st.page:
 		p.m.PageView()
@@ -474,14 +510,10 @@ func (p *Proxy) observe(r *http.Request, st *reqState, c *config.Config, host, k
 		})
 	case st.as != "":
 		p.m.AssetHit()
-		target := r.URL.EscapedPath()
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
-		}
 		p.engine.Observe(learn.Event{
 			Kind:   learn.KindAsset,
 			Host:   host,
-			Path:   target, // assets keep their version query
+			Path:   st.target, // assets keep their version query
 			Ref:    ref,
 			As:     st.as,
 			Client: client,

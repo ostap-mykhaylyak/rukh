@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"net/http"
-	"net/url"
 	"path"
 	"strings"
 )
@@ -78,6 +77,16 @@ func wantsHTML(req *http.Request) bool {
 	return strings.Contains(req.Header.Get("Accept"), "text/html")
 }
 
+// scheme reports how the visitor reached rukh. Together with the
+// protocol version in the same log line it answers "is this client
+// getting HTTP/2, and if not why": h2 requires TLS.
+func scheme(req *http.Request) string {
+	if req.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
 // isSpeculative reports whether a request was made by the browser on
 // its own initiative — a prefetch or a prerender — rather than by a
 // visitor.
@@ -106,21 +115,29 @@ func isSpeculative(req *http.Request) bool {
 // refererPath returns the path of the referring page when it belongs
 // to the same host, normalized like every other model key. Anything
 // cross-origin is invisible to the model on purpose.
+// It is parsed by hand rather than with net/url: this runs on every
+// subresource request, and url.Parse allocates a dozen times to build
+// a structure of which two fields are used.
 func refererPath(req *http.Request, host string) string {
 	ref := req.Header.Get("Referer")
-	if ref == "" {
+	rest, ok := strings.CutPrefix(ref, "https://")
+	if !ok {
+		if rest, ok = strings.CutPrefix(ref, "http://"); !ok {
+			return "" // relative or opaque referrer: nothing to attribute
+		}
+	}
+	refHost, target := rest, "/"
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		refHost, target = rest[:i], rest[i:]
+	}
+	if i := strings.IndexByte(target, '#'); i >= 0 {
+		target = target[:i]
+	}
+	if refHost == "" || !strings.EqualFold(hostOnly(refHost), hostOnly(host)) {
 		return ""
 	}
-	u, err := url.Parse(ref)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	if !strings.EqualFold(hostOnly(u.Host), hostOnly(host)) {
-		return ""
-	}
-	target := u.EscapedPath()
-	if u.RawQuery != "" {
-		target += "?" + u.RawQuery
+	if target == "" {
+		return "/"
 	}
 	return target
 }

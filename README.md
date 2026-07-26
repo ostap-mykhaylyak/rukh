@@ -322,6 +322,43 @@ jq -r 'select(.msg=="request") | [.origin_ms, .duration_ms, .kind, .status, .pat
 Rotation is logrotate's job (policy installed by `--init`); SIGHUP
 reopens the files.
 
+## Protocols and overhead
+
+**Visitors get the best protocol their client supports.** The TLS
+listener advertises `h2` over ALPN, so any current browser gets
+HTTP/2; a client that only speaks HTTP/1.1 falls back cleanly. Plain
+`:80` is HTTP/1.1 by definition — browsers never negotiate h2 without
+TLS — so a request logged with `"scheme":"http"` and `"proto":"HTTP/1.1"`
+is simply a visitor who arrived on port 80. HTTP/3 is not implemented.
+
+**The hop to nginx is HTTP/1.1 with keep-alive, on purpose.** That is
+the fastest option for a loopback hop, and the only one nginx accepts
+upstream anyway (`proxy_pass` itself speaks HTTP/1.1). HTTP/2 would
+multiplex everything onto a single TCP connection and reintroduce
+head-of-line blocking where there is none today; the connection pool
+(256 idle connections per host) already removes the handshake. A test
+asserts that twenty requests reuse one connection.
+
+**What rukh costs per request.** Measured with `go test -bench`, on one
+core: the whole rukh layer — resolving the client address, classifying
+the response, the hint lookup, the observation and the access line —
+is **~7 µs**, of which ~4.4 µs is writing the JSON access line. Most of
+that happens *after* the response has been written to the client, so it
+is not even inside the `duration_ms` the log reports; what is inside is
+the hint lookup, around a microsecond.
+
+That is why `duration_ms - origin_ms` is not rukh's overhead. `origin_ms`
+stops when nginx's response *headers* arrive; the remainder is reading
+the body from nginx and writing it out to the visitor, which every
+proxy has to do — nginx included, when it proxies to PHP. On a request
+answered in 1 ms by the origin and taking 1.2 ms in total, the 0.2 ms
+is bytes moving, not bookkeeping.
+
+The access log is buffered (32 KiB, flushed every 250 ms) precisely so
+it does not cost a write syscall per request; the trade-off is that a
+`kill -9` can lose up to 250 ms of access lines. The service and learn
+logs are unbuffered. `log.access: false` removes the cost entirely.
+
 ## Notes and limits
 
 - Browsers act on `103` over HTTP/2 and HTTP/3. rukh does not send it
