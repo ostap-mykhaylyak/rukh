@@ -71,9 +71,16 @@ func writeCert(t *testing.T, dir, host string) (certFile, keyFile string) {
 
 // startTLSServer brings up the real Server on a TLS port, with the
 // certificate discovered from a test nginx configuration.
-func startTLSServer(t *testing.T, backendAddr string) (*Server, string) {
+func startTLSServer(t *testing.T, backendAddr, hintsBody string) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
+	hintsDir := filepath.Join(dir, "hints")
+	os.MkdirAll(hintsDir, 0o755)
+	if hintsBody != "" {
+		if err := os.WriteFile(filepath.Join(hintsDir, "tls.test.yaml"), []byte(hintsBody), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	certFile, keyFile := writeCert(t, dir, "tls.test")
 
 	ngPath := filepath.Join(dir, "nginx.conf")
@@ -107,7 +114,9 @@ nginx:
 		t.Fatal(err)
 	}
 	engine := learn.New(learn.Params{QueueSize: 64, HalfLife: time.Hour}, nil, logs.Learn)
-	p := New(mgr, ng, engine, hints.NewStore(filepath.Join(dir, "hints"), logs.Service), metrics.New(), logs)
+	manual := hints.NewStore(hintsDir, logs.Service)
+	manual.LoadAll()
+	p := New(mgr, ng, engine, manual, metrics.New(), logs)
 	srv := NewServer(p, mgr, ng, certs.New(), logs)
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
@@ -126,7 +135,7 @@ func TestVisitorsGetHTTP2OverTLS(t *testing.T) {
 	}))
 	defer be.Close()
 
-	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
+	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"), "")
 
 	client := &http.Client{Transport: &http.Transport{
 		ForceAttemptHTTP2: true,
@@ -159,7 +168,7 @@ func TestHTTP11ClientsStillWork(t *testing.T) {
 	}))
 	defer be.Close()
 
-	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
+	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"), "")
 	client := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -217,7 +226,7 @@ func TestVisitorsGetHTTP3(t *testing.T) {
 	}))
 	defer be.Close()
 
-	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
+	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"), "")
 
 	// The TCP response advertises HTTP/3 on the same port, which is how
 	// a browser learns it exists.
@@ -274,10 +283,9 @@ func TestEarlyHintsOverHTTP3(t *testing.T) {
 	}))
 	defer be.Close()
 
-	srv, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
 	// A manual hints file makes the test independent of the learning
 	// delay: what is being checked here is the transport, not the model.
-	srv.p.manual = manualStore(t, "tls.test", "default: [/theme.css]")
+	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"), "default: [/theme.css]")
 
 	tr := &http3.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "tls.test"},
@@ -309,16 +317,4 @@ func TestEarlyHintsOverHTTP3(t *testing.T) {
 	if len(informational) != 1 || !strings.Contains(informational[0], "</theme.css>; rel=preload; as=style") {
 		t.Fatalf("103 over HTTP/3 = %v", informational)
 	}
-}
-
-// manualStore writes one hints file and returns a store serving it.
-func manualStore(t *testing.T, host, body string) *hints.Store {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, host+".yaml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	s := hints.NewStore(dir, logging.Discard().Service)
-	s.LoadAll()
-	return s
 }

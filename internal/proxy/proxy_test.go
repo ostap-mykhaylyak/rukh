@@ -59,15 +59,30 @@ type testEnv struct {
 }
 
 func newEnv(t *testing.T, extra string) *testEnv {
-	return newEnvWith(t, "", extra)
+	return newEnvWith(t, "", extra, "")
+}
+
+// newEnvHints is newEnv with a manual hints file for example.test,
+// written before the proxy is built: nothing may be mutated once the
+// handler is serving.
+func newEnvHints(t *testing.T, hintsBody string) *testEnv {
+	return newEnvWith(t, "", "", hintsBody)
 }
 
 // newEnvWith builds the test environment; serverExtra is merged into
 // the server section, extra is appended as a new top-level section.
-func newEnvWith(t *testing.T, serverExtra, extra string) *testEnv {
+func newEnvWith(t *testing.T, serverExtra, extra, hintsBody string) *testEnv {
 	t.Helper()
 	be := backendEcho(t)
 	dir := t.TempDir()
+
+	hintsDir := filepath.Join(dir, "hints")
+	os.MkdirAll(hintsDir, 0o755)
+	if hintsBody != "" {
+		if err := os.WriteFile(filepath.Join(hintsDir, "example.test.yaml"), []byte(hintsBody), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	ngPath := filepath.Join(dir, "nginx.conf")
 	os.WriteFile(ngPath, []byte("http { server { listen 127.0.0.1:8080; server_name example.test; } }"), 0o644)
@@ -120,7 +135,7 @@ learn:
 	stop := make(chan struct{})
 	engine.Start(stop)
 
-	manual := hints.NewStore(filepath.Join(dir, "hints"), logs.Service)
+	manual := hints.NewStore(hintsDir, logs.Service)
 	manual.LoadAll()
 
 	p := New(mgr, ng, engine, manual, m, logs)
@@ -354,7 +369,7 @@ func TestBackendDownReturns502(t *testing.T) {
 }
 
 func TestHTTPSRedirect(t *testing.T) {
-	env := newEnvWith(t, "  redirect_https: true", "")
+	env := newEnvWith(t, "  redirect_https: true", "", "")
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
@@ -495,19 +510,14 @@ func TestPrefetchLinksAreNotChainedOrSentBackwards(t *testing.T) {
 // announced from the very first request, and merged with whatever has
 // been learned.
 func TestManualHintsAreSentAndMergedWithLearnedOnes(t *testing.T) {
-	env := newEnv(t, "")
-
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "example.test.yaml"), []byte(`
+	env := newEnvHints(t, `
 default:
   - /cdn/theme.css
 paths:
   "/":
     - url: https://cdn.example.net
       rel: preconnect
-`), 0o644)
-	env.proxy.manual = hints.NewStore(dir, logging.Discard().Service)
-	env.proxy.manual.LoadAll()
+`)
 
 	// Nothing has been learned yet: the manual hints alone must fire.
 	var got []string
