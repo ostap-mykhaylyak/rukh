@@ -145,9 +145,14 @@ rukh %s installed. Next steps:
      behind a CDN, list each site's static resources in
      %s/<hostname>.yaml: they never reach this server, so
      rukh cannot learn them by watching traffic
-  3. systemctl daemon-reload
-  4. systemctl enable --now rukh
-  5. rukh status
+  3. for HTTP/3, raise the UDP buffers (QUIC needs them under load)
+     and open UDP 443 on the firewall:
+       echo 'net.core.rmem_max=7500000' > /etc/sysctl.d/99-rukh.conf
+       echo 'net.core.wmem_max=7500000' >> /etc/sysctl.d/99-rukh.conf
+       sysctl --system
+  4. systemctl daemon-reload
+  5. systemctl enable --now rukh
+  6. rukh status
 
 rukh reads %s to discover the virtual hosts and their certificates:
 nothing about certificates has to be configured twice.

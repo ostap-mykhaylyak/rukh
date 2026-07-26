@@ -67,6 +67,10 @@ type Server struct {
 	IdleTimeout       Duration `yaml:"idle_timeout"`
 	TLSMinVersion     string   `yaml:"tls_min_version"` // "1.2" or "1.3"
 	RedirectHTTPS     bool     `yaml:"redirect_https"`  // 301 http -> https
+	// HTTP3 serves QUIC on the same port, over UDP, and advertises it
+	// with Alt-Svc. It needs the https listener; a UDP bind failure is
+	// never fatal, the TCP entrypoints keep serving.
+	HTTP3 bool `yaml:"http3"`
 }
 
 // Backend describes how rukh reaches nginx on the same machine.
@@ -161,6 +165,7 @@ func Default() *Config {
 			IdleTimeout:       Duration(120 * time.Second),
 			TLSMinVersion:     "1.2",
 			RedirectHTTPS:     false,
+			HTTP3:             true,
 		},
 		Backend: Backend{
 			Address:             "", // auto-detect from nginx
@@ -256,6 +261,14 @@ func (c *Config) validate() error {
 	}
 	if c.Server.ReadHeaderTimeout.Std() <= 0 {
 		return fmt.Errorf("server.read_header_timeout must be positive")
+	}
+	// HTTP/3 is TLS-only and shares the port of the TLS entrypoint:
+	// without one there is nothing to run QUIC on. Report it and carry
+	// on, rather than refusing to start over an optional protocol.
+	if c.Server.HTTP3 && c.Server.HTTPS == "" {
+		c.Warnings = append(c.Warnings,
+			"server.http3 is enabled but server.https is empty: HTTP/3 needs the TLS entrypoint, disabling it")
+		c.Server.HTTP3 = false
 	}
 
 	if c.Backend.Address != "" {

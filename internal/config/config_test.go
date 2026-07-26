@@ -124,3 +124,22 @@ func TestManagerReloadKeepsLastGoodOnError(t *testing.T) {
 		t.Fatal("a good reload must clear the error and swap the config")
 	}
 }
+
+func TestHTTP3NeedsTheTLSEntrypoint(t *testing.T) {
+	// On by default: visitors should get the best protocol available.
+	if !Default().Server.HTTP3 {
+		t.Fatal("http3 must default to on")
+	}
+	// Without an https listener there is nothing to run QUIC on: that
+	// is a misconfiguration to report, not a reason to refuse to start.
+	c, err := Load(write(t, "server:\n  https: \"\"\n  http3: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Server.HTTP3 {
+		t.Error("http3 must be turned off when there is no TLS entrypoint")
+	}
+	if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "http3") {
+		t.Errorf("warnings = %v", c.Warnings)
+	}
+}

@@ -62,6 +62,7 @@ type Proxy struct {
 	m      *metrics.Metrics
 	logs   *logging.Streams
 
+	altSvc  atomic.Pointer[string]
 	rip     atomic.Pointer[realIP]
 	backend atomic.Pointer[Backend]
 	tr      atomic.Pointer[http.Transport]
@@ -196,6 +197,11 @@ func (p *Proxy) resolveBackend(c *config.Config) Backend {
 	return Backend{Addr: "127.0.0.1:8080", Auto: true}
 }
 
+// SetAltSvc installs the Alt-Svc value advertising HTTP/3. Called by
+// the server once the QUIC listener is up: a browser only learns about
+// HTTP/3 from a response it received over TCP.
+func (p *Proxy) SetAltSvc(v string) { p.altSvc.Store(&v) }
+
 // Backend returns the current upstream (used by the preloader and by
 // `rukh status`).
 func (p *Proxy) Backend() Backend { return *p.backend.Load() }
@@ -310,6 +316,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hints := p.earlyHints(w, r, c, host, st)
+
+	// Advertised after the 103, so the informational response stays
+	// minimal, and only over TLS: HTTP/3 is TLS-only and a visitor on
+	// port 80 cannot use it.
+	if r.TLS != nil && r.ProtoMajor < 3 {
+		if v := p.altSvc.Load(); v != nil {
+			w.Header().Set("Alt-Svc", *v)
+		}
+	}
 
 	rec := &recorder{ResponseWriter: w}
 	p.rp.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), stateKey{}, st)))

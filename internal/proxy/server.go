@@ -8,9 +8,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/ostap-mykhaylyak/rukh/internal/certs"
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
@@ -32,6 +36,10 @@ type Server struct {
 	httpsSrv *http.Server
 	httpLn   net.Listener
 	httpsLn  net.Listener
+
+	h3       *http3.Server
+	h3Ln     net.PacketConn
+	h3Active atomic.Bool
 
 	lastCertLog atomic.Int64
 }
@@ -81,8 +89,67 @@ func (s *Server) Start() error {
 			}
 		}()
 		s.logs.Service.Info("listening", "entrypoint", "https", "addr", ln.Addr().String())
+
+		if c.Server.HTTP3 {
+			s.startHTTP3(c, ln.Addr())
+		}
 	}
 	return nil
+}
+
+// startHTTP3 serves QUIC on the same port as HTTPS, over UDP, with the
+// same certificates. Failing to bind is never fatal: the TCP
+// entrypoints keep serving and browsers simply never see the Alt-Svc
+// advertisement, which is exactly the graceful degradation HTTP/3 is
+// designed around.
+func (s *Server) startHTTP3(c *config.Config, tcpAddr net.Addr) {
+	host, _, err := net.SplitHostPort(c.Server.HTTPS)
+	if err != nil {
+		return
+	}
+	// The TCP listener's port, not the configured one: with :0 (tests)
+	// they would otherwise differ, and the advertised port must be the
+	// one visitors reached.
+	port := strconv.Itoa(tcpAddr.(*net.TCPAddr).Port)
+	addr := net.JoinHostPort(host, port)
+
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		s.logs.Service.Error("http3 disabled: cannot bind UDP", "addr", addr, "error", err)
+		return
+	}
+	s.h3Ln = pc
+	s.h3 = &http3.Server{
+		Handler: s.p,
+		TLSConfig: http3.ConfigureTLSConfig(&tls.Config{
+			GetCertificate: s.getCertificate,
+			MinVersion:     tls.VersionTLS13, // QUIC is TLS 1.3 only
+		}),
+		// An asset-heavy page opens many concurrent streams; the
+		// quic-go default (100) stalls them.
+		QUICConfig: &quic.Config{
+			MaxIncomingStreams:    1000,
+			MaxIncomingUniStreams: 1000,
+		},
+	}
+	// Tell every TLS response that HTTP/3 is available here.
+	s.p.SetAltSvc(`h3=":` + port + `"; ma=86400`)
+
+	go func() {
+		if err := s.h3.Serve(pc); err != nil && !errors.Is(err, http.ErrServerClosed) &&
+			!errors.Is(err, quic.ErrServerClosed) {
+			s.logs.Service.Error("http3 listener stopped", "error", err)
+		}
+	}()
+	s.h3Active.Store(true)
+	s.logs.Service.Info("listening", "entrypoint", "http3", "addr", addr, "proto", "udp")
+}
+
+// HTTP3 reports whether HTTP/3 is configured and whether the QUIC
+// listener is actually up: binding UDP can fail without stopping the
+// daemon, and that difference must be visible.
+func (s *Server) HTTP3() (enabled, active bool) {
+	return s.cfg.Get().Server.HTTP3, s.h3Active.Load()
 }
 
 func (s *Server) newHTTPServer(c *config.Config) *http.Server {
@@ -164,13 +231,16 @@ func tlsVersion(v string) uint16 {
 	return tls.VersionTLS12
 }
 
-// Shutdown drains both servers.
+// Shutdown drains the TCP servers and closes the QUIC one.
 func (s *Server) Shutdown(ctx context.Context) {
 	if s.httpSrv != nil {
 		s.httpSrv.Shutdown(ctx)
 	}
 	if s.httpsSrv != nil {
 		s.httpsSrv.Shutdown(ctx)
+	}
+	if s.h3 != nil {
+		s.h3.Close()
 	}
 }
 
@@ -181,6 +251,12 @@ func (s *Server) Close() {
 	}
 	if s.httpsLn != nil {
 		s.httpsLn.Close()
+	}
+	if s.h3 != nil {
+		s.h3.Close()
+	}
+	if s.h3Ln != nil {
+		s.h3Ln.Close()
 	}
 }
 

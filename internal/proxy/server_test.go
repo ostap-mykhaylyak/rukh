@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,12 +14,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/ostap-mykhaylyak/rukh/internal/certs"
 	"github.com/ostap-mykhaylyak/rukh/internal/config"
@@ -201,4 +206,119 @@ func TestBackendConnectionsAreReused(t *testing.T) {
 	if n := opened.Load(); n != 1 {
 		t.Fatalf("opened %d backend connections for 20 requests, want 1 (keep-alive)", n)
 	}
+}
+
+// Visitors must also get HTTP/3 when their client can: QUIC on the
+// same port, advertised over TCP with Alt-Svc.
+func TestVisitorsGetHTTP3(t *testing.T) {
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html></html>")
+	}))
+	defer be.Close()
+
+	_, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
+
+	// The TCP response advertises HTTP/3 on the same port, which is how
+	// a browser learns it exists.
+	h2 := &http.Client{Transport: &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, ServerName: "tls.test"},
+	}}
+	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/", nil)
+	req.Host = "tls.test"
+	resp, err := h2.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	_, port, _ := net.SplitHostPort(addr)
+	if want := `h3=":` + port + `"; ma=86400`; resp.Header.Get("Alt-Svc") != want {
+		t.Fatalf("Alt-Svc = %q, want %q", resp.Header.Get("Alt-Svc"), want)
+	}
+
+	// And the QUIC listener actually answers.
+	tr := &http3.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "tls.test"},
+	}
+	defer tr.Close()
+	h3client := &http.Client{Transport: tr}
+	req3, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/", nil)
+	req3.Host = "tls.test"
+	resp3, err := h3client.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.Proto != "HTTP/3.0" || resp3.StatusCode != http.StatusOK {
+		t.Fatalf("proto = %q, status = %d", resp3.Proto, resp3.StatusCode)
+	}
+	// A response already carried over HTTP/3 has no reason to advertise
+	// it again.
+	if got := resp3.Header.Get("Alt-Svc"); got != "" {
+		t.Errorf("Alt-Svc on an HTTP/3 response = %q, want none", got)
+	}
+}
+
+// Early Hints are the whole point of the exercise: they must reach the
+// visitor over HTTP/3 too, where they matter most.
+func TestEarlyHintsOverHTTP3(t *testing.T) {
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".css") {
+			w.Header().Set("Content-Type", "text/css")
+			fmt.Fprint(w, "body{}")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html></html>")
+	}))
+	defer be.Close()
+
+	srv, addr := startTLSServer(t, strings.TrimPrefix(be.URL, "http://"))
+	// A manual hints file makes the test independent of the learning
+	// delay: what is being checked here is the transport, not the model.
+	srv.p.manual = manualStore(t, "tls.test", "default: [/theme.css]")
+
+	tr := &http3.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "tls.test"},
+	}
+	defer tr.Close()
+
+	var informational []string
+	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/", nil)
+	req.Host = "tls.test"
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	trace := &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
+			if code == http.StatusEarlyHints {
+				informational = append(informational, h.Get("Link"))
+			}
+			return nil
+		},
+	}
+	resp, err := (&http.Client{Transport: tr}).Do(
+		req.WithContext(httptrace.WithClientTrace(context.Background(), trace)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Proto != "HTTP/3.0" {
+		t.Fatalf("proto = %q", resp.Proto)
+	}
+	if len(informational) != 1 || !strings.Contains(informational[0], "</theme.css>; rel=preload; as=style") {
+		t.Fatalf("103 over HTTP/3 = %v", informational)
+	}
+}
+
+// manualStore writes one hints file and returns a store serving it.
+func manualStore(t *testing.T, host, body string) *hints.Store {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, host+".yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := hints.NewStore(dir, logging.Discard().Service)
+	s.LoadAll()
+	return s
 }

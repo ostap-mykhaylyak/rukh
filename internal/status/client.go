@@ -90,6 +90,10 @@ func report(w io.Writer, snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed t
 				c.NotAfter.Format("2006-01-02"), time.Until(c.NotAfter).Hours()/24, c.Subject)
 		}
 	}
+	if h := snap.HTTP3; h != nil && h.Enabled {
+		fmt.Fprintf(w, "http3:    %s\n",
+			boolWord(h.Active, "listening (QUIC/UDP)", "NOT listening: UDP bind failed"))
+	}
 	if l := snap.Live; l != nil {
 		var reqRate, errRate float64
 		if prev.Live != nil && elapsed > 0 {

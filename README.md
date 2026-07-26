@@ -325,11 +325,26 @@ reopens the files.
 ## Protocols and overhead
 
 **Visitors get the best protocol their client supports.** The TLS
-listener advertises `h2` over ALPN, so any current browser gets
-HTTP/2; a client that only speaks HTTP/1.1 falls back cleanly. Plain
-`:80` is HTTP/1.1 by definition — browsers never negotiate h2 without
-TLS — so a request logged with `"scheme":"http"` and `"proto":"HTTP/1.1"`
-is simply a visitor who arrived on port 80. HTTP/3 is not implemented.
+listener advertises `h3` and `h2` over ALPN and QUIC runs on the same
+port over UDP, so a current browser gets HTTP/3, an older one HTTP/2,
+and a client that only speaks HTTP/1.1 falls back cleanly. Early Hints
+travel over all three. Plain `:80` is HTTP/1.1 by definition — browsers
+never negotiate h2 without TLS — so a request logged with
+`"scheme":"http"` and `"proto":"HTTP/1.1"` is simply a visitor who
+arrived on port 80.
+
+HTTP/3 needs two things from the host: **UDP 443 open** on the firewall,
+and larger UDP buffers, which `--init` prints as a step:
+
+```bash
+echo 'net.core.rmem_max=7500000' > /etc/sysctl.d/99-rukh.conf
+echo 'net.core.wmem_max=7500000' >> /etc/sysctl.d/99-rukh.conf
+sysctl --system
+```
+
+Failing to bind UDP never stops the daemon: HTTP/2 keeps serving, the
+`Alt-Svc` advertisement is simply not sent, and `rukh status` reports
+`http3` as not listening. Turn it off with `server.http3: false`.
 
 **The hop to nginx is HTTP/1.1 with keep-alive, on purpose.** That is
 the fastest option for a loopback hop, and the only one nginx accepts

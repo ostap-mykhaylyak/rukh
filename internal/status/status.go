@@ -71,6 +71,12 @@ type NginxSection struct {
 	Certs      []certs.Info `json:"certs,omitempty"`
 }
 
+// HTTP3Section reports the state of the QUIC entrypoint.
+type HTTP3Section struct {
+	Enabled bool `json:"enabled"`
+	Active  bool `json:"active"`
+}
+
 // Snapshot is the full status document served over the socket.
 // Field names are stable across versions.
 type Snapshot struct {
@@ -79,6 +85,7 @@ type Snapshot struct {
 	Service   ServiceInfo       `json:"service"`
 	Config    ConfigInfo        `json:"config"`
 	Nginx     *NginxSection     `json:"nginx,omitempty"`
+	HTTP3     *HTTP3Section     `json:"http3,omitempty"`
 	Hints     []hints.Info      `json:"hints,omitempty"`
 	Learn     *learn.Stats      `json:"learn,omitempty"`
 	Preload   *preload.Stats    `json:"preload,omitempty"`
@@ -129,7 +136,10 @@ type Sources struct {
 	Metrics    *metrics.Metrics
 	LogDir     string
 	BackendURL func() (addr string, auto bool)
-	TopPages   int
+	// HTTP3 reports the configured and actual state of the QUIC
+	// listener; nil when the caller has no server (tests).
+	HTTP3    func() (enabled, active bool)
+	TopPages int
 }
 
 // NewCollector builds the snapshot function the daemon serves on the
@@ -200,6 +210,15 @@ func NewCollector(s Sources) func() *Snapshot {
 		}
 		if soon := expiringCerts(ng.Certs); soon != "" {
 			checks = append(checks, Check{"certificates", Warn, soon})
+		}
+
+		if s.HTTP3 != nil {
+			enabled, active := s.HTTP3()
+			snap.HTTP3 = &HTTP3Section{Enabled: enabled, Active: active}
+			if enabled && !active {
+				checks = append(checks, Check{"http3", Warn,
+					"enabled but the QUIC listener is not up (UDP bind failed, see rukh.log)"})
+			}
 		}
 
 		// backend reachability: one local dial, no request

@@ -366,6 +366,7 @@ func runDaemon(cfgPath, pidfile, sock string) (err error) {
 			b := prx.Backend()
 			return b.Addr, b.Auto
 		},
+		HTTP3: srv.HTTP3,
 	})
 	statusSrv, err := status.Serve(sock, collect)
 	if err != nil {
