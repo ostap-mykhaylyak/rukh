@@ -16,8 +16,12 @@ server:
   https: ":443"               # "" disables the TLS listener
   read_header_timeout: "10s"
   idle_timeout: "120s"
-  tls_min_version: "1.2"      # "1.2" or "1.3"
+  tls_min_version: "1.2"      # "1.2" or "1.3" (QUIC is always 1.3)
   redirect_https: false       # 301 http -> https (leave to nginx if it already does it)
+  # HTTP/3: QUIC on the same port, over UDP, advertised with Alt-Svc.
+  # Needs UDP 443 open and larger UDP buffers (--init prints the
+  # sysctl). A failed UDP bind is never fatal: HTTP/2 keeps serving.
+  http3: true
 
 # --- where nginx now listens ------------------------------------------
 backend:
@@ -61,6 +65,11 @@ learn:
 # --- automatic 103 Early Hints ---------------------------------------
 hints:
   enabled: true
+  # One optional YAML file per host, named after the host. Use it when
+  # traffic cannot teach the resources: behind a CDN the static files
+  # are served from the edge and never reach this server. See
+  # example.com.yaml.example in that directory.
+  dir: "/etc/rukh/hints"
   min_confidence: 0.6         # how reliably the resource follows the page
   min_samples: 5              # decayed hits required before it is trusted
   max_links: 10

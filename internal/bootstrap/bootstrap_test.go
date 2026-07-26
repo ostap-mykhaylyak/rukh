@@ -54,10 +54,17 @@ func TestSkelConfigIsValid(t *testing.T) {
 	if len(cfg.Warnings) != 0 {
 		t.Fatalf("the shipped config must not warn: %v", cfg.Warnings)
 	}
+	// Every knob an operator is expected to touch must appear in the
+	// shipped file: a feature nobody can find is a feature nobody uses.
+	for _, key := range []string{"http3:", "dir:", "half_life:", "min_confidence:", "max_per_minute:"} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("the shipped config does not document %q", key)
+		}
+	}
 	// Every documented default must match the code's default.
 	def := config.Default()
 	if cfg.Learn.HalfLife != def.Learn.HalfLife || cfg.Hints.MaxLinks != def.Hints.MaxLinks ||
-		cfg.Preload.MaxPerMinute != def.Preload.MaxPerMinute {
+		cfg.Preload.MaxPerMinute != def.Preload.MaxPerMinute || cfg.Server.HTTP3 != def.Server.HTTP3 {
 		t.Fatal("the shipped config documents values that differ from the built-in defaults")
 	}
 }
